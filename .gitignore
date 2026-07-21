@@ -1,0 +1,25 @@
+# Secrets and per-instance config - NEVER commit.
+.env
+*.local
+secrets.toml
+
+# Anything data- or identity-shaped that a build/test might drop here.
+*.db
+*.db-*
+*.jsonl
+*.log
+USER.md
+OVERSEER.md
+APP.md
+
+# Build/stage scratch.
+stage/
+dist/
+node_modules/
+__pycache__/
+*.pyc
+
+# Editor noise.
+.DS_Store
+.idea/
+.vscode/

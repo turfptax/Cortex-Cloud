@@ -1,0 +1,38 @@
+# DEPRECATED for the Azure target (pivot 2026-05-28). The Gateway now deploys to
+# Azure Container Apps / App Service with an Azure-managed TLS cert on a custom
+# domain - no tunnel needed. Kept only for the optional self-host path, or if you
+# choose to front the Azure endpoint with Cloudflare (use a CNAME + WAF instead
+# of a tunnel). See deploy/azure-deploy.md for the current deployment.
+#
+# --- (original, Pi-era) -------------------------------------------------------
+# cloudflared tunnel config - public HTTPS for the Cortex Gateway with NO
+# inbound ports open on the Pi 5. Install on the Pi 5 home node.
+#
+# Setup (one time):
+#   cloudflared tunnel login
+#   cloudflared tunnel create cortex-gateway          # prints a tunnel UUID
+#   cloudflared tunnel route dns cortex-gateway cortex.example.com
+#   # put the UUID + credentials path below, then:
+#   sudo cp deploy/cloudflared-config.yml /etc/cloudflared/config.yml
+#   sudo cloudflared service install
+#   sudo systemctl enable --now cloudflared
+#
+# Then set GATEWAY_PUBLIC_URL=https://cortex.example.com in the Gateway .env
+# so OAuth issuer + discovery metadata advertise the right host.
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /root/.cloudflared/REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  # MCP endpoint for AI connectors (Streamable HTTP).
+  - hostname: cortex.example.com
+    path: /mcp*
+    service: http://127.0.0.1:8430
+  # Everything else (REST /v1, OAuth, discovery, health).
+  - hostname: cortex.example.com
+    service: http://127.0.0.1:8430
+  # Required catch-all.
+  - service: http_status:404
+
+# Cloudflare also provides edge rate limiting + WAF rules in the dashboard;
+# pair those with the Gateway's per-token limiter for defense in depth.

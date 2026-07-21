@@ -1,0 +1,27 @@
+[project]
+name = "cortex-gateway"
+version = "0.1.0"
+description = "Authenticated, internet-reachable Gateway fronting the canonical Cortex corpus: REST (phone app) + Streamable-HTTP MCP (external AI connectors)."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "mcp>=1.2",
+    "pydantic>=2.7",
+    "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+# Azure SQL driver (production). Requires the system ODBC Driver 18 for SQL Server.
+mssql = ["pyodbc>=5.0"]
+
+[project.scripts]
+cortex-gateway = "cortex_gateway.__main__:main"
+cortex-gateway-token = "cortex_gateway.tokens_cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cortex_gateway", "cortex_gateway.rest"]
