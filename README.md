@@ -120,10 +120,24 @@ Microsoft sign-in, and nothing else.
 
 ## What you get
 
-A web Hub with search over your whole corpus, a chat surface backed by your memory, a
-timeline and activity view, journaling, and file import. AI assistants get search, read,
-recent, and ingest tools over MCP. A copy-context page at `/intro` hands a portable brief
-to any AI that is not connected.
+Cortex organizes what it remembers into five pillars, and the goal is for every one of
+them to be reachable both in the web Hub and over MCP, so any AI you connect can use them:
+
+| Pillar | What it holds |
+|---|---|
+| **Memory** | your corpus: searchable by meaning and by keyword, layered from summaries down to raw source |
+| **Projects** | what you are working on, rolled up over time |
+| **People** | your contacts and the interactions with them |
+| **Rules** | the hard-won defaults you want every AI to respect |
+| **Skills** | a living record of how you do things |
+
+Three engines keep it alive: an **Overseer** that curates memory in the background, a
+**Lemon Squeezer** that turns your interactions into durable lessons, and **Simples**, a
+planner that turns goals into time blocks. A copy-context page at `/intro` hands a portable
+brief to any AI that is not connected.
+
+Today the MCP surface exposes Memory (search, read, recent, ingest); the pillars and
+planning are becoming first-class MCP tools next. See [docs/VISION.md](docs/VISION.md).
 
 ## Repo layout
 
