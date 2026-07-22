@@ -28,7 +28,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import corpus_service, pillars_service
+from . import corpus_service, grants, pillars_service
 from .auth import Principal
 from .config import get_settings
 
@@ -88,8 +88,9 @@ mcp = FastMCP(
         "- cortex_rules_list: Tory's standing tech rules (hard-won engineering "
         "defaults). Read these before advising on his stack.\n"
         "- cortex_skills_list / cortex_skill_get: his tech-skills portfolio.\n"
-        "- writes (cortex_project_upsert / cortex_rule_add / cortex_skill_log) "
-        "need a write-enabled token, off by default.\n\n"
+        "- writes (cortex_project_upsert / cortex_rule_add / cortex_skill_log, "
+        "plus cortex_ingest) work for any approved connection: logging is a "
+        "first-class use, so read and write come together.\n\n"
         "Reads are read-only over a closed corpus. Follow token links "
         "(next_tokens) to traverse related memories. People is intentionally "
         "not exposed over MCP."
@@ -199,11 +200,11 @@ def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
 def cortex_ingest(content: str, kind: str = "note", tags: str = "",
                   project: str = "") -> dict[str, Any]:
     """Push an observation into Cortex's intake pipeline (the overseer loop
-    later organizes it). Additive (never deletes/overwrites). Requires a
-    connector:write token, which is disabled by default."""
+    later organizes it). Additive (never deletes/overwrites). Available to any
+    approved connection."""
     p = _principal()
-    if not p.has("connector:write"):
-        return {"ok": False, "error": "token lacks connector:write scope"}
+    if not grants.can_write(p):
+        return {"ok": False, "error": "write requires an approved connection"}
     return corpus_service.ingest(p, content=content, kind=kind,
                                  tags=tags or None, project=project or None)
 
@@ -277,9 +278,8 @@ def cortex_project_upsert(tag: str, name: str = "", status: str = "",
                           category: str = "", org_tag: str = "",
                           github_url: str = "") -> dict[str, Any]:
     """Create or partially update a project by tag; only the fields you pass
-    change (omitted fields are preserved). Requires a connector:write token,
-    which is disabled by default. Collaborators are People-pillar data and are
-    not editable over MCP."""
+    change (omitted fields are preserved). Works for any approved connection.
+    Collaborators are People-pillar data and are not editable over MCP."""
     fields: dict[str, Any] = {}
     if name:
         fields["name"] = name
@@ -306,7 +306,7 @@ def cortex_rule_add(title: str, rule: str, stack: str = "",
                     situation: str = "") -> dict[str, Any]:
     """Add (or update by title) a standing tech rule in Tory's living rule log
     that every connecting AI reads. `rule` is the imperative one-liner.
-    Requires a connector:write token, off by default."""
+    Works for any approved connection."""
     return pillars_service.rule_add(_principal(), title=title, rule=rule,
                                     stack=stack, situation=situation)
 
@@ -318,7 +318,6 @@ def cortex_rule_add(title: str, rule: str, stack: str = "",
 def cortex_skill_log(skill: str, content: str, kind: str = "note",
                      proficiency: str = "") -> dict[str, Any]:
     """Append an entry (lesson, win, project, tooling, or note) under a skill,
-    creating the skill header if new. Requires a connector:write token, off by
-    default."""
+    creating the skill header if new. Works for any approved connection."""
     return pillars_service.skill_log(_principal(), skill=skill, content=content,
                                      kind=kind, proficiency=proficiency)

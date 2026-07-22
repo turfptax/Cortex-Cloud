@@ -193,18 +193,29 @@ def test_reads_log_pull_events(gw, granted):
 
 # ── Write scope guard ─────────────────────────────────────────────────
 
-def test_writes_require_connector_write_scope(gw, monkeypatch):
+def test_unapproved_connector_cannot_write(gw, monkeypatch):
+    # An unapproved connection (no grant) is denied write, and never touches
+    # the core. Read-only scope + no grant -> can_write False.
     rec = _CoreRec()
     monkeypatch.setattr(pillars_service.corpus_writes, "routed", lambda: True)
     monkeypatch.setattr(pillars_service.corpus_writes, "core", lambda: rec)
-    ro = _connector()                       # connector:read only
-    assert pillars_service.project_upsert(ro, tag="x", fields={"name": "X"})["error"] \
-        == "token lacks connector:write scope"
-    assert pillars_service.rule_add(ro, title="t", rule="r")["error"] \
-        == "token lacks connector:write scope"
-    assert pillars_service.skill_log(ro, skill="s", content="c")["error"] \
-        == "token lacks connector:write scope"
+    ro = _connector()                       # connector:read, no grant
+    for out in (pillars_service.project_upsert(ro, tag="x", fields={"name": "X"}),
+                pillars_service.rule_add(ro, title="t", rule="r"),
+                pillars_service.skill_log(ro, skill="s", content="c")):
+        assert out["ok"] is False
+        assert out["error"] == "write requires an approved connection"
     assert rec.calls == []                  # never reached the core
+
+
+def test_approved_connector_can_write_without_write_scope(gw, routed_core, monkeypatch):
+    # Approval IS the write gate now (Tory 2026-07-22): a connector with only
+    # connector:read but an approved (active+full) grant can log.
+    monkeypatch.setattr(pillars_service.grants, "has_full_access", lambda p: True)
+    ro = _connector()                       # connector:read only, but approved
+    out = pillars_service.rule_add(ro, title="Use WAL", rule="Set WAL on sqlite")
+    assert out["ok"] and out["id"] == 7
+    assert routed_core.calls and routed_core.calls[0][0] == "/plugins/overseer/rules/add"
 
 
 # ── Write routing to the core ─────────────────────────────────────────
