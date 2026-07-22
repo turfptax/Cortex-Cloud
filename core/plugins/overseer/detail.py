@@ -27,7 +27,6 @@ otherwise):
   n     future_overseer_notes
   j     overseer_journal
   b     known_blindspots
-  dial  dialectic_open
   nar   temporal_narratives          (added 2026-05-27, L99 must-fix #1)
   hj    human_journal_entries        (added 2026-05-27, L99 must-fix #1)
 """
@@ -53,7 +52,6 @@ _PREFIX_TO_TYPE = {
     "n":    "future_note",
     "j":    "journal_entry",
     "b":    "blindspot",
-    "dial": "dialectic",
     "nar":  "temporal_narrative",      # added 2026-05-27
     "hj":   "human_journal_entry",     # added 2026-05-27
     "gp":   "gist_prompt",             # added 2026-05-27 (Phase 1d)
@@ -70,7 +68,6 @@ _TABLE_TO_PREFIX = {
     "future_overseer_notes":  "n",
     "overseer_journal":       "j",
     "known_blindspots":       "b",
-    "dialectic_open":         "dial",
     "temporal_narratives":    "nar",   # added 2026-05-27
     "human_journal_entries":  "hj",    # added 2026-05-27
     "gist_prompts":           "gp",    # added 2026-05-27 (Phase 1d)
@@ -380,26 +377,6 @@ def _resolve_blindspot(db, bid):
     }
 
 
-def _resolve_dialectic(db, did):
-    row = db.get_dialectic(did)
-    if not row:
-        return None
-    next_tokens = []
-    art_tbl = row.get("artifact_type")
-    art_id = row.get("artifact_id")
-    tok = make_token(art_tbl, art_id) if art_tbl and art_id else None
-    if tok:
-        next_tokens.append(_next(
-            tok, "the artifact under dispute", kind="source",
-        ))
-    return {
-        "primary": row,
-        "tags": [],
-        "context": {},
-        "next_tokens": next_tokens,
-    }
-
-
 def _resolve_temporal_narrative(db, nid):
     """Added 2026-05-27 (L99 must-fix #1). Resolve a temporal narrative
     by row id - daily/weekly/monthly/yearly artifact.
@@ -511,7 +488,6 @@ _RESOLVERS = {
     "n":    _resolve_future_note,
     "j":    _resolve_journal_entry,
     "b":    _resolve_blindspot,
-    "dial": _resolve_dialectic,
     "nar":  _resolve_temporal_narrative,    # added 2026-05-27
     "hj":   _resolve_human_journal_entry,   # added 2026-05-27
     "gp":   _resolve_gist_prompt,           # added 2026-05-27 (Phase 1d)

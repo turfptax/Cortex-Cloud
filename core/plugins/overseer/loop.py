@@ -51,7 +51,6 @@ from claude_jsonl import (
 )
 from automation_rollup import generate_rollup
 from notifications import evaluate_rules
-from dialectic import paired_generate, write_dialectic_row
 from prompts import (session_gist_prompt, import_gist_prompt,
                      import_gist_prompt_sanitized)
 from journal import write_tick_journal_entry
@@ -958,22 +957,11 @@ class OverseerLoop:
         else:
             # Slice 3f.5 reframed prompt: gist drops all but THE CHANGE
             prompt = import_gist_prompt(**gist_args)
-        if self._cfg.get("loop_paired_generation", True):
-            paired = paired_generate(
-                llm=self._llm, prompt=prompt,
-                max_tokens=200, temperature=0.4,
-                purpose="summarize-session",
-            )
-            budget.charge(paired["opus"])
-            budget.charge(paired["gemma"])
-            primary_result = paired["opus"]
-        else:
-            primary_result = self._llm.complete(
-                prompt, max_tokens=200, temperature=0.4,
-                purpose="summarize-session",
-            )
-            budget.charge(primary_result)
-            paired = None
+        primary_result = self._llm.complete(
+            prompt, max_tokens=200, temperature=0.4,
+            purpose="summarize-session",
+        )
+        budget.charge(primary_result)
 
         if not primary_result.get("ok"):
             self._db.mark_imported_processed(
@@ -1010,20 +998,6 @@ class OverseerLoop:
             confidence="med",
             tags=tags,
         )
-        if paired and paired.get("ok"):
-            try:
-                write_dialectic_row(
-                    db=self._db, paired=paired,
-                    artifact_type="gist", artifact_id=gist_id,
-                    purpose="summarize-session",
-                    source_context="import " + (imp.get("id") or "")[-12:]
-                                   + ", " + str(stats["messages_used"])
-                                   + " msgs",
-                )
-            except Exception as e:
-                self._log.warning(
-                    "dialectic write failed for import %s: %s",
-                    imp["id"], e)
 
         # Slice 3f.5 #2: route this new gist against open questions
         self._route_gist(gist_id, gist_text, summary, budget)
@@ -1236,24 +1210,11 @@ class OverseerLoop:
                              else ", first {} shown".format(max_notes)),
             body=body,
         )
-        # Paired generation if enabled - Opus and Gemma in parallel.
-        # The diff between their outputs becomes a dialectic_open row.
-        if self._cfg.get("loop_paired_generation", True):
-            paired = paired_generate(
-                llm=self._llm, prompt=prompt,
-                max_tokens=160, temperature=0.4,
-                purpose="summarize-session",
-            )
-            budget.charge(paired["opus"])
-            budget.charge(paired["gemma"])
-            primary_result = paired["opus"]
-        else:
-            primary_result = self._llm.complete(
-                prompt, max_tokens=160, temperature=0.4,
-                purpose="summarize-session",
-            )
-            budget.charge(primary_result)
-            paired = None
+        primary_result = self._llm.complete(
+            prompt, max_tokens=160, temperature=0.4,
+            purpose="summarize-session",
+        )
+        budget.charge(primary_result)
 
         if not primary_result.get("ok"):
             self._db.mark_session_processed(
@@ -1278,20 +1239,6 @@ class OverseerLoop:
             tags=["auto", "session-summary"]
                  + (["platform:" + platform] if platform else []),
         )
-        # Persist the dialectic if paired ran successfully on both sides.
-        if paired and paired.get("ok"):
-            try:
-                write_dialectic_row(
-                    db=self._db, paired=paired,
-                    artifact_type="gist", artifact_id=gist_id,
-                    purpose="summarize-session",
-                    source_context=("session " + session["id"][:8]
-                                    + ", " + str(len(notes)) + " notes"),
-                )
-            except Exception as e:
-                self._log.warning(
-                    "dialectic write failed for session %s: %s",
-                    session["id"], e)
 
         # Slice 3f.5 #2: route this new gist against open questions
         self._route_gist(gist_id, gist_text, summary, budget)
