@@ -76,17 +76,70 @@ def test_approve_then_revoke_take_effect_immediately(gw, monkeypatch):
 
 # ── confirmation policy ───────────────────────────────────────────────
 
+def test_default_policy_is_durable(gw, monkeypatch):
+    # Durable by default (Tory 2026-07-22): approve once and it stays approved
+    # on reconnect, so an AI does not re-prompt every time it uses the connector.
+    monkeypatch.delenv("GATEWAY_CONNECTOR_FULL_HOSTS", raising=False)
+    _config, db, _ = gw
+    _config.get_settings.cache_clear()
+    _register(db, "cli_d", "https://d.example/cb")
+    grants.upsert_on_connect("cli_d", "d", "d.example")
+    assert grants.grant_for("cli_d")["approval_policy"] == "always"
+    gid = grants.grant_for("cli_d")["id"]
+    grants.approve(gid, "full")                                 # no always= needed
+    grants.upsert_on_connect("cli_d", "d", "d.example")         # reconnect
+    assert grants.grant_for("cli_d")["status"] == "active"      # not reset to pending
+    _config.get_settings.cache_clear()
+
+
 def test_ask_policy_reconfirms_on_reconnect(gw, monkeypatch):
+    # The strict re-confirm mode still exists; it is now opt-in (set_policy).
     monkeypatch.delenv("GATEWAY_CONNECTOR_FULL_HOSTS", raising=False)
     _config, db, _ = gw
     _config.get_settings.cache_clear()
     _register(db, "cli_ask", "https://ask.example/cb")
-    grants.upsert_on_connect("cli_ask", "ask", "ask.example")   # pending / ask
+    grants.upsert_on_connect("cli_ask", "ask", "ask.example")
     gid = grants.grant_for("cli_ask")["id"]
-    grants.approve(gid, "full")                                 # active, still 'ask'
+    grants.approve(gid, "full")
+    grants.set_policy(gid, "ask")                               # opt into strict re-confirm
     assert grants.grant_for("cli_ask")["status"] == "active"
     grants.upsert_on_connect("cli_ask", "ask", "ask.example")   # a new connection
     assert grants.grant_for("cli_ask")["status"] == "pending"   # must re-confirm
+    _config.get_settings.cache_clear()
+
+
+def test_dedupe_connections_collapses_a_service(gw, monkeypatch):
+    # Three connections from the same service collapse to the approved one.
+    monkeypatch.delenv("GATEWAY_CONNECTOR_FULL_HOSTS", raising=False)
+    _config, db, _ = gw
+    _config.get_settings.cache_clear()
+    for cid in ("cli_1", "cli_2", "cli_3"):
+        _register(db, cid, "https://claude.ai/cb", name="Claude")
+        grants.upsert_on_connect(cid, "Claude", "claude.ai")
+    grants.approve(grants.grant_for("cli_2")["id"], "full")     # the keeper
+    assert grants.dedupe_connections() == 2
+    assert grants.grant_for("cli_2")["status"] == "active"      # approved one survives
+    assert grants.grant_for("cli_1")["status"] == "revoked"
+    assert grants.grant_for("cli_3")["status"] == "revoked"
+    assert grants.dedupe_connections() == 0                     # idempotent
+    _config.get_settings.cache_clear()
+
+
+def test_dedupe_leaves_loopback_connections_alone(gw, monkeypatch):
+    # Loopback native-app sessions (Claude Code) share host 127.0.0.1 on
+    # different ephemeral ports; they must NOT be collapsed (would revoke an
+    # in-use token). See the register-dedup vs host-only-dedup key mismatch.
+    monkeypatch.delenv("GATEWAY_CONNECTOR_FULL_HOSTS", raising=False)
+    _config, db, _ = gw
+    _config.get_settings.cache_clear()
+    _register(db, "cli_lb1", "http://127.0.0.1:51000/cb", name="Claude Code")
+    grants.upsert_on_connect("cli_lb1", "Claude Code", "127.0.0.1")
+    grants.approve(grants.grant_for("cli_lb1")["id"], "full")
+    _register(db, "cli_lb2", "http://127.0.0.1:51999/cb", name="Claude Code")
+    grants.upsert_on_connect("cli_lb2", "Claude Code", "127.0.0.1")
+    assert grants.dedupe_connections() == 0                     # neither revoked
+    assert grants.grant_for("cli_lb1")["status"] == "active"
+    assert grants.grant_for("cli_lb2")["status"] != "revoked"
     _config.get_settings.cache_clear()
 
 

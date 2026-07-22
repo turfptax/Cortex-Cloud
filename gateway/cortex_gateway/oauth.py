@@ -238,12 +238,28 @@ async def register(request: Request):
         _audit("register", request, "blocked", reason="redirect_not_allowlisted",
                client_name=client_name, redirect_uris=redirect_uris)
         raise HTTPException(400, "redirect_uri not in the trusted-client allowlist")
-    client_id = "cli_" + secrets.token_urlsafe(16)
-    db.insert("oauth_clients", {
-        "client_id": client_id,
-        "client_name": client_name,
-        "redirect_uris": "\n".join(redirect_uris),
-    })
+    # Dedup: a public client (PKCE, no secret) that re-registers with the same
+    # identity (name + redirect set) reuses its client_id instead of spawning a
+    # new one. Without this, every reconnect minted a fresh client_id, so one
+    # service showed up as many pending connections that each needed approval.
+    # Prefer a client_id that already has an active grant, so a re-registration
+    # lands on the connection the owner already approved.
+    stored_redirects = "\n".join(redirect_uris)
+    dup = db.fetchall(
+        "SELECT c.client_id FROM oauth_clients c "
+        "LEFT JOIN connector_grants g ON g.client_id = c.client_id "
+        "WHERE c.client_name = :n AND c.redirect_uris = :r "
+        "ORDER BY (CASE WHEN g.status = 'active' THEN 0 ELSE 1 END), c.client_id",
+        {"n": client_name, "r": stored_redirects})
+    if dup:
+        client_id = dup[0]["client_id"]
+    else:
+        client_id = "cli_" + secrets.token_urlsafe(16)
+        db.insert("oauth_clients", {
+            "client_id": client_id,
+            "client_name": client_name,
+            "redirect_uris": stored_redirects,
+        })
     _audit("register", request, "allowed", client_id=client_id,
            client_name=client_name, redirect_uris=redirect_uris)
     return JSONResponse({
