@@ -1,0 +1,68 @@
+name: Deploy
+
+# Continuous deployment: a green push to master builds the image and rolls the
+# live instance. Auth is OIDC federated (no stored secret); the three IDs are
+# repo secrets. Manual runs are allowed via the Actions tab.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC federated login
+  contents: read
+
+concurrency:
+  group: deploy-cortex-cloud
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: pip install fastapi "uvicorn[standard]" mcp pydantic sqlalchemy python-multipart httpx pytest
+      - name: Gateway test suite
+        run: cd gateway && python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image
+        id: build
+        run: |
+          TAG="$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          az acr build --registry cortexacr47df \
+            --image cortex-cloud:$TAG --file deploy/Dockerfile .
+
+      - name: Roll all containers to the new image
+        run: python deploy/roll.py "${{ steps.build.outputs.tag }}"
+
+      - name: Smoke test the live instance
+        run: |
+          set -euo pipefail
+          # give the new revision a moment to take traffic (wake from zero)
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://cortex.turfptax.com/mcp || true)
+            [ "$code" = "307" ] && break
+            sleep 10
+          done
+          curl -fsS https://cortex.turfptax.com/health | grep -q '"ok":true'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST https://cortex.turfptax.com/mcp)" = "307"
+          test "$(curl -s -o /dev/null -w '%{http_code}' https://cortex.turfptax.com/api/health)" = "401"
+          echo "smoke test passed"

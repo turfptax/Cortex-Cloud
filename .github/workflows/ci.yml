@@ -1,0 +1,22 @@
+name: CI
+
+# Tests run on pull requests and on pushes to non-default branches. Pushes to
+# master run the Deploy workflow, which tests before it deploys, so this avoids
+# duplicate test runs on master.
+on:
+  pull_request:
+  push:
+    branches-ignore: [master]
+
+jobs:
+  gateway-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: pip install fastapi "uvicorn[standard]" mcp pydantic sqlalchemy python-multipart httpx pytest
+      - name: Gateway test suite
+        run: cd gateway && python -m pytest -q
