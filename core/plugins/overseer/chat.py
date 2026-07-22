@@ -25,10 +25,6 @@ import logging
 import os
 import time
 
-from insight_scan import (
-    CHAT_INSIGHT_MARKER_INSTRUCTION,
-    extract_and_queue_chat_insights,
-)
 from distill_corrections import maybe_log_chat_correction
 from blindspots import (
     applicable_blindspots,
@@ -1089,7 +1085,6 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
                        max_tokens: int = 800,
                        temperature: float = 0.7,
                        max_history_turns: int = 20,
-                       insight_snippet_enabled: bool = True,
                        attachments: list[dict] | None = None,
                        uploads_dir: str | None = None,
                        sibling_daily_cap: int = 20,
@@ -1119,13 +1114,6 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
                        known_user_id: int | None = None) -> dict:
     """End-to-end: append user msg to chat_messages, build prompt,
     call LLM, persist assistant response, return result dict.
-
-    When insight_snippet_enabled (default True), the system prompt asks
-    the LLM to optionally mark insight candidates in its reply with a
-    fenced ```insight {...}``` block. Such blocks are stripped from
-    the user-visible reply BEFORE persistence and queued in
-    pending_interpretations for the user to confirm/reject in the Hub
-    Insights tab.
 
     attachments (Slice 8): list of {filename, mime_type, size, pi_path,
     file_id, sha256} refs. Each must already exist on disk under
@@ -1313,8 +1301,6 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
     full_system = sys_text + history_summary
     if blindspots_block:
         full_system = full_system + "\n\n" + blindspots_block
-    if insight_snippet_enabled:
-        full_system = full_system + "\n\n" + CHAT_INSIGHT_MARKER_INSTRUCTION
 
     # Slice 8: append inlined text/pdf attachments to the user prompt.
     # Image attachments go through the multimodal `images` channel
@@ -1379,8 +1365,6 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
     base_system = sys_text
     if blindspots_block:
         base_system = base_system + "\n\n" + blindspots_block
-    if insight_snippet_enabled:
-        base_system = base_system + "\n\n" + CHAT_INSIGHT_MARKER_INSTRUCTION
     # Slice 14: voice-mode succinctness directive - appended LAST so
     # it's the freshest instruction in the system block.
     if voice_mode:
@@ -1515,25 +1499,11 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
         thread_id=tid,
     )
 
-    # Now strip insight markers and queue candidates. The user-visible
-    # reply is the cleaned version (markers removed); pending_
-    # interpretations gets the structured candidates pointing back at
-    # this chat message via source_chat_message_id.
+    # Insight-marker extraction was removed with the insight_scan
+    # feature. The user-visible reply is the raw reply; no candidates
+    # are queued.
     insight_candidates = []
     reply_for_user = raw_reply
-    if insight_snippet_enabled:
-        try:
-            reply_for_user, insight_candidates = (
-                extract_and_queue_chat_insights(
-                    db=db,
-                    reply_text=raw_reply,
-                    chat_message_id=asst_id,
-                )
-            )
-        except Exception as e:
-            logging.getLogger("plugin.overseer.chat").exception(
-                "chat insight extraction failed: %s", e,
-            )
 
     return {
         "ok": True,
