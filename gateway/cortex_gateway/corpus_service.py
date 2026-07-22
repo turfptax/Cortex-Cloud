@@ -105,6 +105,13 @@ def _gate_decision(principal: Principal, table: str, row: dict) -> str:
     return decision
 
 
+# Public names for cross-module callers (pillars_service reuses the exact
+# same default-deny grant + tier + category gate and pull-logging). The
+# underscored originals stay for existing call sites and tests.
+gate_decision = _gate_decision
+record_pull = _record_pull
+
+
 def _redact_row(decision: str, row: dict, body_cols: list, title_col) -> dict:
     """Strip body content from a fetched row per the gate decision."""
     if decision == "withheld":

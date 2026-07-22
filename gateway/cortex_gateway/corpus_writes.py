@@ -146,6 +146,25 @@ def insert_journal(values: dict) -> int:
     return db.insert("human_journal_entries", values)
 
 
+def rule_add(values: dict) -> dict:
+    """tech_rules lives in overseer.db, outside CMD:upsert's whitelist and
+    owned solely by the core. Route the upsert-on-title through the overseer
+    plugin route (same "POST to a core plugin route" shape as insert_journal).
+    Returns the core's response dict ({ok, id, ...})."""
+    if not routed():
+        raise CoreWriteError("rule writes require the co-located core")
+    return core().post("/plugins/overseer/rules/add", values)
+
+
+def skill_log(values: dict) -> dict:
+    """tech_skills + tech_skill_log live in overseer.db. Append a log entry
+    (creating the skill header on first mention) through the overseer plugin
+    route. Returns the core's response dict."""
+    if not routed():
+        raise CoreWriteError("skill writes require the co-located core")
+    return core().post("/plugins/overseer/skills/log", values)
+
+
 # ── Sync forwarding (ratified contract v2) ────────────────────────────
 
 
