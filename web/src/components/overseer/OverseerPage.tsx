@@ -8,8 +8,6 @@ import { ProjectsTab } from './ProjectsTab'
 // (Chat/Search/Corpus overview) ships without the graph stack.
 const ExplorerPanel = lazy(() =>
   import('./ExplorerPanel').then((m) => ({ default: m.ExplorerPanel })))
-const EcosystemMapPanel = lazy(() =>
-  import('./EcosystemMapPanel').then((m) => ({ default: m.EcosystemMapPanel })))
 import { useVoiceMode } from '../../hooks/useVoiceMode'
 import { useCloudMode } from '../../hooks/useCloudMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
@@ -65,11 +63,11 @@ import {
 // Dialectic sunset (writer off since 2026-05-24) and replaced by
 // Squeeze (AI report card from graded dispatches); Classify folded
 // into the Projects tab.
-type Tab = 'overview' | 'chat' | 'squeeze' | 'projects' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts' | 'voice'
+type Tab = 'overview' | 'chat' | 'squeeze' | 'projects' | 'notifications' | 'explorer' | 'contacts' | 'voice'
 
 const CORPUS_TABS: readonly Tab[] = [
   'overview', 'projects', 'squeeze',
-  'ecosystem', 'explorer', 'notifications', 'contacts', 'voice',
+  'explorer', 'notifications', 'contacts', 'voice',
 ]
 
 // Old bookmarks keep landing somewhere sensible.
@@ -1267,7 +1265,6 @@ export function OverseerPage() {
                 ['overview', 'Overview'],
                 ['projects', 'Projects'],
                 ['squeeze', 'Squeeze'],
-                ['ecosystem', 'Map'],
                 ['explorer', 'Explorer'],
                 ['contacts', 'Contacts'],
                 ...(isCloud ? [] : [['voice', 'Voice'] as const]),
@@ -1369,11 +1366,6 @@ export function OverseerPage() {
               setExpandedToken(t)
             }}
           />
-        </Suspense>
-      )}
-      {tab === 'ecosystem' && (
-        <Suspense fallback={<PanelLoading label="graph engine" />}>
-          <EcosystemMapPanel />
         </Suspense>
       )}
       {tab === 'projects' && (

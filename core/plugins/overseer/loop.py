@@ -531,56 +531,18 @@ class OverseerLoop:
                 import git_ingest as _gi
                 summary["git_ingest"] = _gi.run_scheduled(
                     self._db, self._cfg, self._log)
-                # Slice 15 CP1: publish per-repo events so missions
-                # can watch repos. Best-effort.
-                try:
-                    gi = summary.get("git_ingest") or {}
-                    if gi.get("ran"):
-                        for repo in gi.get("repos_attempted") or []:
-                            name = (repo if isinstance(repo, str)
-                                    else repo.get("repo")
-                                    or repo.get("name") or "")
-                            if name:
-                                self._db.publish_event(
-                                    "git_ingest.new_commits",
-                                    project=str(name),
-                                    payload={"repo": str(name)})
-                except Exception as e:
-                    self._log.warning(
-                        "git event publish failed: %s", e)
             except Exception as e:
                 self._log.exception("git_ingest step failed: %s", e)
                 summary["errors"].append("git_ingest: " + str(e)[:200])
 
         # Step 1c.6 (2026-06-11): periodic YouTube persona-channel
         # ingest. Same shape as git ingest: own schedule, rows picked
-        # up by the NEXT tick's summarize step. Publishes
-        # social.post.created only for videos INSERTED this run, so a
-        # manual CLI backfill (rows pre-exist as duplicates) never
-        # floods missions with old uploads (anchor-mark rule).
+        # up by the NEXT tick's summarize step.
         if self._cfg.get("loop_youtube_ingest_enabled", False):
             try:
                 import youtube_ingest as _yt
                 summary["youtube_ingest"] = _yt.run_scheduled(
                     self._db, self._cfg, self._log)
-                try:
-                    yt = summary.get("youtube_ingest") or {}
-                    if yt.get("ran"):
-                        for ch in yt.get("channels_attempted") or []:
-                            for vid in ch.get("new_videos") or []:
-                                self._db.publish_event(
-                                    "social.post.created",
-                                    project=str(
-                                        ch.get("project") or ""),
-                                    payload={
-                                        "platform": "youtube",
-                                        "persona": ch.get("persona"),
-                                        "video_id": vid.get("id"),
-                                        "title": vid.get("title"),
-                                    })
-                except Exception as e:
-                    self._log.warning(
-                        "youtube event publish failed: %s", e)
             except Exception as e:
                 self._log.exception("youtube_ingest step failed: %s", e)
                 summary["errors"].append(
@@ -619,17 +581,6 @@ class OverseerLoop:
             except Exception as e:
                 self._log.exception("tag step failed: %s", e)
                 summary["errors"].append("tag: " + str(e)[:200])
-
-        # Step 2b (Slice 15 CP1): drain project events against mission
-        # subscriptions. Read-only in CP1 - matches become Bell
-        # proposals + scratchpad lines, never dispatch. No LLM cost
-        # (semantic gate runs on local embeddings).
-        if self._cfg.get("loop_run_missions", True):
-            try:
-                self._run_missions_step(summary)
-            except Exception as e:
-                self._log.exception("missions step failed: %s", e)
-                summary["errors"].append("missions: " + str(e)[:200])
 
         # Step 2c (2026-06-13): tier new device_notifications (signal /
         # ambient / drop) + parse weather into ambient_observations.
@@ -788,70 +739,6 @@ class OverseerLoop:
         except Exception as e:
             self._log.exception("b_agent_gc step failed: %s", e)
             summary["errors"].append("b_agent_gc: " + str(e)[:200])
-
-        # ── Step 11: C graduation check (Slice 10 CP5) ───────────
-        # Once-per-day scan for B patterns that meet the graduation
-        # bar (≥10 dispatches + ≥7 rated 4+ in 7-day window). When
-        # found AND no C row exists for that B yet, emit a notification
-        # with custom actions [Promote / Keep as B / Explain]. The
-        # accept handler creates the C row via accept_c_promotion()
-        # called from chat_tools when overseer processes Tory's reply.
-        # Per locked design (agent_ecosystem_design.md): graduation is
-        # NEVER automatic - Tory accepts or rejects each proposal.
-        # NOTE: removed once-per-day gate (2026-05-20 directive from
-        # Tory). Original concern was notification spam, but the
-        # rule_key='c_grad:<b_name>' dedup at the notifications layer
-        # handles that - re-firing the check every tick can't produce
-        # duplicate notifications. Cost is one cheap stats query per
-        # tick. Running every tick keeps the shake-out feedback loop
-        # short: as soon as overseer dispatches enough Bs, the
-        # proposal appears.
-        if self._cfg.get("c_graduation_check_enabled", True):
-            try:
-                # Slice 10 CP5: thresholds are configurable for
-                # shake-out testing. Defaults (in overseer_db.py
-                # class constants) match the locked design (10/7/7);
-                # plugin.toml ships lower values (2/1/1) for early
-                # production until one happy-path graduation
-                # round-trip confirms the flow.
-                proposals = self._db.check_c_graduations(
-                    min_dispatches=int(self._cfg.get(
-                        "c_graduation_min_dispatches",
-                        self._db.C_GRADUATION_MIN_DISPATCHES)),
-                    min_rated_4plus=int(self._cfg.get(
-                        "c_graduation_min_rated_4plus",
-                        self._db.C_GRADUATION_MIN_RATED_4PLUS)),
-                    window_days=int(self._cfg.get(
-                        "c_graduation_window_days",
-                        self._db.C_GRADUATION_WINDOW_DAYS)),
-                )
-                if proposals:
-                    summary["c_graduation_proposals"] = len(proposals)
-                    for p in proposals:
-                        self._emit_c_graduation_proposal(p)
-            except AttributeError:
-                self._log.debug(
-                    "check_c_graduations not available (old install)")
-            except Exception as e:
-                self._log.exception("c_graduation step failed: %s", e)
-                summary["errors"].append(
-                    "c_graduation: " + str(e)[:200])
-
-        # ── Step 12: Scheduled C-agent runs (Slice 10 CP5) ────────
-        # For each due C agent (cadence_minutes elapsed since last_run_at
-        # or never-run), dispatch the underlying B with the C's frozen
-        # snapshot args. The same b_agents.dispatch_b_agent() path is
-        # reused - C is just "B with a schedule" until specialization
-        # (e.g. fine-tuned model swap) happens. C invocations carry
-        # target='c-agent:<name>' in sibling_tasks for audit separation.
-        if self._cfg.get("c_agents_run_enabled", True):
-            try:
-                self._run_scheduled_c_agents(budget=budget, summary=summary)
-            except AttributeError:
-                self._log.debug("c_agents not available (old install)")
-            except Exception as e:
-                self._log.exception("c_agents run failed: %s", e)
-                summary["errors"].append("c_agents: " + str(e)[:200])
 
         # Tally + persist
         summary["finished_at"] = _utc_iso()
@@ -1409,17 +1296,6 @@ class OverseerLoop:
         # Slice 3f.5 #2: route this new gist against open questions
         self._route_gist(gist_id, gist_text, summary, budget)
 
-        # Slice 15 CP1: publish gist.created so missions can react.
-        # Best-effort - publishing must never break summarization.
-        try:
-            self._db.publish_event(
-                "gist.created",
-                project=session.get("project") or "",
-                payload={"gist_id": gist_id,
-                         "snippet": (gist_text or "")[:300]})
-        except Exception as e:
-            self._log.warning("gist.created publish failed: %s", e)
-
         self._db.mark_session_processed(
             session["id"], gist_id=gist_id, notes_count=len(notes))
         return "summarized"
@@ -1905,133 +1781,6 @@ class OverseerLoop:
 
     # ── Step 9: temporal cadence (Slice 5 CP2) ──────────────────
 
-    # ── Slice 10 CP5 (2026-05-20): C-graduation + scheduled runs ────
-
-    def _emit_c_graduation_proposal(self, proposal: dict) -> None:
-        """Emit a notification with custom actions when a B pattern
-        meets the graduation bar. Tory accepts, rejects, or asks for
-        explanation via the action buttons.
-
-        Idempotent against repeated proposals: notification rule_key
-        is 'c_grad:<b_name>' so re-emits dedupe at the notification
-        layer (notifications schema already has dedup-by-rule_key).
-        """
-        b_name = proposal["b_agent_name"]
-        c_name = proposal["proposed_c_name"]
-        d = proposal["dispatches"]
-        r4 = proposal["rated_4_plus"]
-        title = f"Promote B agent '{b_name}' to C?"
-        body = (
-            f"`{b_name}` has crossed the graduation bar: {d} dispatches "
-            f"in the past 7 days, {r4} of them rated 4+ by overseer. "
-            f"Proposed C name: `{c_name}` (24h cadence by default). "
-            f"C will reuse the B's system prompt frozen at promotion "
-            f"time and run on a schedule. You can promote, keep as B, "
-            f"or ask overseer to explain the difference."
-        )
-        actions = [
-            {
-                "label": "Promote to C",
-                "kind": "promote_b_to_c",
-                "payload": {
-                    "b_agent_name": b_name,
-                    "proposed_c_name": c_name,
-                    "dispatches": d,
-                    "rated_4_plus": r4,
-                },
-            },
-            {
-                "label": "Keep as B",
-                "kind": "keep_as_b",
-                "payload": {"b_agent_name": b_name},
-            },
-            {
-                "label": "Explain",
-                "kind": "explain_c_graduation",
-                "payload": {"b_agent_name": b_name},
-            },
-        ]
-        try:
-            self._db.emit_notification(
-                severity="info",
-                title=title,
-                body=body,
-                rule_name="c-graduation-proposal",
-                rule_key=f"c_grad:{b_name}",
-                related_table="c_agents",
-                related_id=b_name,
-                actions=actions,
-            )
-            self._log.info(
-                "c-graduation proposal emitted: %s (d=%d, r4+=%d)",
-                b_name, d, r4)
-        except Exception as e:
-            self._log.exception("emit c-graduation proposal failed: %s", e)
-
-    def _run_scheduled_c_agents(self, *, budget: "TickBudget",
-                                  summary: dict) -> None:
-        """Dispatch any C agents whose cadence has elapsed. Each
-        invocation reuses the B-agent dispatcher under a
-        target='c-agent:<name>' label so audit + rating semantics
-        carry over.
-
-        C invocations bypass the per-tick LLM budget gating only if
-        explicitly opted in via cfg (default: respect budget). Each
-        C costs ~$0.02 per run; with daily cadence and a small
-        number of Cs, total cost stays well under $1/day.
-        """
-        try:
-            due = self._db.list_due_c_agents()
-        except AttributeError:
-            return  # old install
-        if not due:
-            return
-        try:
-            import b_agents as _b_agents
-        except Exception as e:
-            self._log.warning("b_agents import failed in C-run: %s", e)
-            return
-
-        ran = 0
-        for c in due:
-            if budget.exhausted():
-                summary.setdefault("skipped_due_to_budget", []).append(
-                    f"c_agent:{c['name']}")
-                break
-            # For the first C cycle, C runs the SAME logic as its B
-            # parent. The b_agent_name in the registry must match
-            # c['graduated_from_b_name']. If the parent B is gone
-            # (e.g. removed from the registry), skip with a log.
-            b_parent = c["graduated_from_b_name"]
-            if b_parent not in _b_agents.B_AGENTS:
-                self._log.warning(
-                    "c_agent '%s' has no B parent '%s' in registry; "
-                    "skipping scheduled run",
-                    c["name"], b_parent)
-                continue
-            # The first C use case (theme_check) doesn't need
-            # specific args - it's an overseer-side decision which
-            # theme to audit. For scheduled-without-args Cs we skip
-            # for now and surface a notification asking overseer to
-            # supply args. Future: store args_json on c_agents row.
-            self._log.info(
-                "c_agent '%s' is due but has no scheduled-args "
-                "wiring yet; passing this slice", c["name"])
-            # Mark last_run_at to avoid infinite due-polling. Even
-            # though we didn't actually fire, the cadence is the
-            # "check interval" semantically.
-            try:
-                self._db.update_c_agent_run(
-                    c_agent_id=c["id"],
-                    sibling_task_id=0,  # 0 = no actual run
-                )
-            except Exception:
-                pass
-            ran += 1
-
-        if ran:
-            summary["c_agents_due_handled"] = ran
-
     def _run_temporal_cadence(self, *, budget: TickBudget,
                                 summary: dict):
         """Daily / weekly / monthly / yearly Sonnet rollups on a
@@ -2451,87 +2200,6 @@ class OverseerLoop:
         self._log.info(
             "notif classify: %d tiered (%d duplicates), %d weather obs",
             classified, dupes, ambient)
-
-    def _run_missions_step(self, summary):
-        """Slice 15 CP1 (2026-06-10): the trigger system the missions
-        seed called the missing piece. Drains project_events against
-        mission_subscriptions; each candidate match passes a SEMANTIC
-        gate (event payload embedded locally and cosine-compared to
-        the mission's focus text) so missions fire on meaning, not
-        keyword floods. CP1 is read-only: a match emits a Bell
-        proposal + a scratchpad line. Dispatch authority is CP3."""
-        events = self._db.unprocessed_events(limit=50)
-        if not events:
-            return
-        try:
-            from embeddings import embed_texts
-        except Exception:
-            embed_texts = None
-
-        def _cosine(a, b):
-            num = sum(x * y for x, y in zip(a, b))
-            da = sum(x * x for x in a) ** 0.5
-            db_ = sum(y * y for y in b) ** 0.5
-            return num / (da * db_) if da and db_ else 0.0
-
-        fired = 0
-        focus_vecs = {}
-        for ev in events:
-            for sub in self._db.mission_subscriptions_for(ev["kind"]):
-                if (sub.get("mission_project") and ev.get("project")
-                        and sub["mission_project"] != ev["project"]):
-                    continue
-                sim = None
-                if (embed_texts is not None
-                        and getattr(self._db, "vec_available", False)
-                        and sub.get("mission_focus")):
-                    try:
-                        mid = sub["mission_id"]
-                        if mid not in focus_vecs:
-                            v = embed_texts([sub["mission_focus"][:800]])
-                            focus_vecs[mid] = v[0] if v else None
-                        pv = (embed_texts(
-                            [(ev.get("payload_json") or "")[:800]])
-                            or [None])[0]
-                        if focus_vecs[mid] and pv:
-                            sim = _cosine(focus_vecs[mid], pv)
-                    except Exception:
-                        sim = None
-                threshold = float(sub.get("min_similarity") or 0.55)
-                if sim is not None and sim < threshold:
-                    continue
-                fired += 1
-                sim_label = ("{:.2f}".format(sim)
-                             if sim is not None else "n/a")
-                try:
-                    self._db.emit_notification(
-                        severity="info",
-                        title="Mission '{}' triggered by {}".format(
-                            sub["name"], ev["kind"]),
-                        body="Event #{} (project: {}) matched with "
-                             "similarity {}. CP1 is read-only: this "
-                             "is a proposal, no action was taken. "
-                             "Payload: {}".format(
-                                 ev["id"], ev.get("project") or "-",
-                                 sim_label,
-                                 (ev.get("payload_json") or "")[:300]),
-                        rule_name="mission_proposal",
-                        rule_key="{}:{}".format(
-                            sub["mission_id"], ev["id"]),
-                        related_table="c_agents",
-                        related_id=str(sub["mission_id"]),
-                    )
-                except Exception as e:
-                    self._log.warning(
-                        "mission notification failed: %s", e)
-                self._db.append_mission_scratchpad(
-                    sub["mission_id"],
-                    "[{}] {} event #{} project={} sim={}\n".format(
-                        _utc_iso(), ev["kind"], ev["id"],
-                        ev.get("project") or "-", sim_label))
-        self._db.mark_events_processed([e["id"] for e in events])
-        if fired:
-            summary["mission_proposals"] = fired
 
     def _build_relevant_context(self, top_questions, top_projects,
                                 exclude_ids, recent_cutoff):
