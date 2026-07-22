@@ -15,6 +15,37 @@ def test_expected_tools_present():
         "cortex_recent", "cortex_ingest"}
 
 
+def test_pillar_tools_present():
+    assert set(_tools()) >= {
+        "cortex_projects_list", "cortex_project_get", "cortex_rules_list",
+        "cortex_skills_list", "cortex_skill_get",
+        "cortex_project_upsert", "cortex_rule_add", "cortex_skill_log"}
+
+
+def test_no_people_tool_exposed():
+    # People is owner-only (Tory, 2026-07-21): nothing person-shaped on /mcp.
+    for name in _tools():
+        assert "people" not in name and "person" not in name, name
+
+
+def test_pillar_reads_annotated_read_only():
+    tools = _tools()
+    for name in ("cortex_projects_list", "cortex_project_get",
+                 "cortex_rules_list", "cortex_skills_list", "cortex_skill_get"):
+        ann = tools[name].annotations
+        assert ann is not None and ann.readOnlyHint is True, name
+        assert ann.openWorldHint is False, name
+
+
+def test_pillar_writes_annotated_nondestructive_write():
+    tools = _tools()
+    for name in ("cortex_project_upsert", "cortex_rule_add", "cortex_skill_log"):
+        ann = tools[name].annotations
+        assert ann.readOnlyHint is False, name
+        assert ann.destructiveHint is False, name   # additive/partial, never deletes
+        assert ann.openWorldHint is False, name
+
+
 def test_every_tool_has_title_and_description():
     for name, t in _tools().items():
         assert t.title, f"{name} missing title"

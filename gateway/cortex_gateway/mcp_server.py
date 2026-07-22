@@ -4,11 +4,16 @@ Transport: Streamable HTTP (SSE is deprecated - not built). One endpoint,
 mounted into the FastAPI app at /mcp. Stateless so multiple connectors can
 hit it independently behind the Cloudflare Tunnel.
 
-Dual tool layer on the one endpoint:
-  • search + fetch - OpenAI-compatible pair. ChatGPT connectors REJECT any
-    MCP server lacking these with OpenAI's schema; Claude + Grok use them too.
-  • cortex_* - richer layered surface for Claude / Grok / dev-mode
+Tool layers on the one endpoint:
+  • search + fetch - OpenAI-compatible pair over the Memory corpus. ChatGPT
+    connectors REJECT any MCP server lacking these with OpenAI's schema;
+    Claude + Grok use them too. Kept Memory-only so structured pillar rows
+    never leak into a generic reader that expects the corpus token shape.
+  • cortex_* Memory - richer layered surface for Claude / Grok / dev-mode
     ChatGPT (cortex_search / cortex_read / cortex_recent / cortex_ingest).
+  • cortex_* pillars - Projects / Rules / Skills as first-class tools
+    (list + get reads, plus writes gated behind connector:write, off by
+    default). People stays owner-only and is not exposed here.
 
 Auth: bearer token validated by middleware (see app.py), principal stashed in
 a contextvar that tools read for scope checks + pull-event attribution.
@@ -23,7 +28,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import corpus_service
+from . import corpus_service, pillars_service
 from .auth import Principal
 from .config import get_settings
 
@@ -77,8 +82,17 @@ mcp = FastMCP(
         "at the start of a conversation.\n"
         "- cortex_ingest(content): add an observation back into Cortex (write; "
         "needs a write-enabled token, which is off by default).\n\n"
-        "All reads are read-only over a closed corpus. Follow token links "
-        "(next_tokens) to traverse related memories."
+        "Pillars (structured, first-class):\n"
+        "- cortex_projects_list / cortex_project_get: what Tory is working on, "
+        "with the Overseer's rollup stats.\n"
+        "- cortex_rules_list: Tory's standing tech rules (hard-won engineering "
+        "defaults). Read these before advising on his stack.\n"
+        "- cortex_skills_list / cortex_skill_get: his tech-skills portfolio.\n"
+        "- writes (cortex_project_upsert / cortex_rule_add / cortex_skill_log) "
+        "need a write-enabled token, off by default.\n\n"
+        "Reads are read-only over a closed corpus. Follow token links "
+        "(next_tokens) to traverse related memories. People is intentionally "
+        "not exposed over MCP."
     ),
     stateless_http=True,
     json_response=True,
@@ -192,3 +206,119 @@ def cortex_ingest(content: str, kind: str = "note", tags: str = "",
         return {"ok": False, "error": "token lacks connector:write scope"}
     return corpus_service.ingest(p, content=content, kind=kind,
                                  tags=tags or None, project=project or None)
+
+
+# ── Pillar tools: Projects / Rules / Skills ───────────────────────────
+# People is owner-only (not exposed). Reads reuse the Memory gate; writes
+# gate on connector:write (off by default) exactly like cortex_ingest.
+
+
+@mcp.tool(title="List Cortex projects",
+          annotations=ToolAnnotations(title="List Cortex projects",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_projects_list(status: str = "", limit: int = 40) -> dict[str, Any]:
+    """List Tory's projects (tag, name, status, priority, category, hours,
+    last touched). Optional `status` filter (e.g. 'active'). Read-only."""
+    return pillars_service.projects_list(_principal(), status=status,
+                                         limit=limit)
+
+
+@mcp.tool(title="Get a Cortex project",
+          annotations=ToolAnnotations(title="Get a Cortex project",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_project_get(tag: str) -> dict[str, Any]:
+    """Full detail for one project by its tag, plus the Overseer's numeric
+    rollup stats (sessions, active minutes, cost) when available. Read-only."""
+    return pillars_service.project_get(_principal(), tag)
+
+
+@mcp.tool(title="List Cortex tech rules",
+          annotations=ToolAnnotations(title="List Cortex tech rules",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_rules_list(status: str = "active", stack: str = "",
+                      limit: int = 40) -> dict[str, Any]:
+    """List Tory's standing tech rules (hard-won engineering defaults: title,
+    rule, stack, situation, status). Optional `stack` substring filter and
+    `status` (default 'active'). Read these before advising on his stack.
+    Read-only."""
+    return pillars_service.rules_list(_principal(), status=status,
+                                      stack=stack, limit=limit)
+
+
+@mcp.tool(title="List Cortex skills",
+          annotations=ToolAnnotations(title="List Cortex skills",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_skills_list(limit: int = 40) -> dict[str, Any]:
+    """List Tory's tech-skills portfolio index (name, proficiency, summary,
+    tools). Read-only."""
+    return pillars_service.skills_list(_principal(), limit=limit)
+
+
+@mcp.tool(title="Get a Cortex skill",
+          annotations=ToolAnnotations(title="Get a Cortex skill",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_skill_get(name: str) -> dict[str, Any]:
+    """One skill's full entry plus its append-only log of lessons, wins,
+    projects, and tooling notes. Read-only."""
+    return pillars_service.skill_get(_principal(), name)
+
+
+@mcp.tool(title="Upsert a Cortex project",
+          annotations=ToolAnnotations(title="Upsert a Cortex project",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=False))
+def cortex_project_upsert(tag: str, name: str = "", status: str = "",
+                          priority: int = 0, description: str = "",
+                          category: str = "", org_tag: str = "",
+                          github_url: str = "") -> dict[str, Any]:
+    """Create or partially update a project by tag; only the fields you pass
+    change (omitted fields are preserved). Requires a connector:write token,
+    which is disabled by default. Collaborators are People-pillar data and are
+    not editable over MCP."""
+    fields: dict[str, Any] = {}
+    if name:
+        fields["name"] = name
+    if status:
+        fields["status"] = status
+    if priority:
+        fields["priority"] = int(priority)
+    if description:
+        fields["description"] = description
+    if category:
+        fields["category"] = category
+    if org_tag:
+        fields["org_tag"] = org_tag
+    if github_url:
+        fields["github_url"] = github_url
+    return pillars_service.project_upsert(_principal(), tag=tag, fields=fields)
+
+
+@mcp.tool(title="Add a Cortex tech rule",
+          annotations=ToolAnnotations(title="Add a Cortex tech rule",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=False, openWorldHint=False))
+def cortex_rule_add(title: str, rule: str, stack: str = "",
+                    situation: str = "") -> dict[str, Any]:
+    """Add (or update by title) a standing tech rule in Tory's living rule log
+    that every connecting AI reads. `rule` is the imperative one-liner.
+    Requires a connector:write token, off by default."""
+    return pillars_service.rule_add(_principal(), title=title, rule=rule,
+                                    stack=stack, situation=situation)
+
+
+@mcp.tool(title="Log a Cortex skill entry",
+          annotations=ToolAnnotations(title="Log a Cortex skill entry",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=False, openWorldHint=False))
+def cortex_skill_log(skill: str, content: str, kind: str = "note",
+                     proficiency: str = "") -> dict[str, Any]:
+    """Append an entry (lesson, win, project, tooling, or note) under a skill,
+    creating the skill header if new. Requires a connector:write token, off by
+    default."""
+    return pillars_service.skill_log(_principal(), skill=skill, content=content,
+                                     kind=kind, proficiency=proficiency)
