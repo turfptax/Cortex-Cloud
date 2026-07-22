@@ -206,65 +206,6 @@ def recent_notes_gist_prompt(*, body: str) -> str:
     ).format(body=body)
 
 
-# ── Episodes ────────────────────────────────────────────────────
-# Drop everything but the SHAPE.
-# (Not auto-generated yet - used by 3h synthesis loop. Define here
-# so the prompt is locked in a single place when 3h ships.)
-
-def episode_prompt(*, body: str, source_label: str = "") -> str:
-    return (
-        "You are extracting the SHAPE of an event - its beats, "
-        "decisions, transitions, and the people involved. Drop the "
-        "prose. Drop the prose's prose. Keep only what would let a "
-        "future reader reconstruct the structure of what happened.\n\n"
-        "Format your output as:\n"
-        "  Title: <short noun phrase>\n"
-        "  Duration: <approximate, like '~30 min' or '~2 hours'>\n"
-        "  Participants: <who, by name or role>\n"
-        "  Beats: <numbered list of structural moments>\n"
-        "  Decisions: <numbered list of choices made>\n"
-        "  Transitions: <numbered list of state changes - A → B>\n"
-        "  Surface when: <one sentence: what trigger conditions should "
-        "make a future overseer surface this episode in working memory>\n\n"
-        "Source: {source}\n\n"
-        "Content:\n{body}\n\n"
-        "Reply with ONLY the structured fields above. No preamble."
-        + MARKER_PRESERVATION_RULE
-    ).format(source=source_label or "(unspecified)", body=body)
-
-
-# ── Themes ──────────────────────────────────────────────────────
-# Drop everything but the RHYME.
-
-def theme_prompt(*, body: str, prior_themes_summary: str = "") -> str:
-    return (
-        "You are looking for the RHYME - what does this gist or episode "
-        "connect to elsewhere in the user's life? Drop the specific "
-        "contents. Keep the resonance. A theme is something that recurs "
-        "across multiple discrete events but isn't itself a single event.\n\n"
-        "Examples of theme-shapes (yours can be different):\n"
-        "  - 'making the hidden visible' - a method recurring across "
-        "    several projects\n"
-        "  - 'reciprocity as relationship signature' - a value enacted "
-        "    across many interactions\n"
-        "  - 'dialectic as epistemic method' - a stance recurring across "
-        "    work choices\n\n"
-        "Format:\n"
-        "  Title: <noun phrase>\n"
-        "  Body: <2-4 sentences: what the rhyme is, what evidence rhymes "
-        "with it, what would falsify it>\n"
-        "  Confidence: <high|med|low - how strongly the evidence supports "
-        "this being a real theme vs. a coincidence>\n"
-        "  Tags: <comma-separated namespaced tags like theme:making-hidden-visible>\n\n"
-        "Existing themes (don't duplicate; build on or distinguish from):\n"
-        "{prior}\n\n"
-        "Source content to find rhymes against:\n{body}\n\n"
-        "If no real rhyme is visible, reply with: 'No theme - content "
-        "stands alone.'"
-        + MARKER_PRESERVATION_RULE
-    ).format(prior=prior_themes_summary or "(none yet)", body=body)
-
-
 # ── Layer documentation (for the chat persona / API docs) ───────
 
 LAYER_SEMANTICS = """\
