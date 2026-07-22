@@ -141,17 +141,27 @@ planning are becoming first-class MCP tools next. See [docs/VISION.md](docs/VISI
 
 ## Repo layout
 
+One repo, one app. The image builds from these subdirs in a single
+multi-stage `deploy/Dockerfile`, no external checkouts.
+
 ```
-cortex_gateway/     the FastAPI gateway (OAuth server, /api facade, MCP, SPA serving)
+core/               the memory engine + the Overseer loop (the `core` container)
+gateway/            the FastAPI gateway: OAuth server, /api facade, MCP, SPA serving
+  cortex_gateway/     the package
+  tests/              the gateway test suite (pytest)
+web/                the web Hub SPA source (React + Vite); built into the image
 deploy/             infrastructure as code plus the deploy scripts
+  Dockerfile               self-contained multi-stage build (SPA + runtime)
   containerapp.tmpl.yaml   the four-container app, parameterized
   deploy.sh                one-shot provision and deploy
   entra-setup.sh           the Microsoft sign-in app, locked to you
-  build-image.sh           build the combined image from source
+  build-image.sh           az acr build from the repo root
   tick-job.sh              schedule the memory loop
-docs/               the OAuth flow, connector-grant model, and Entra setup
-tests/              the gateway test suite (pytest)
+docs/               the OAuth flow, connector-grant model, Entra setup, vision
 ```
+
+Build the image with `az acr build --file deploy/Dockerfile .` from the
+repo root; the SPA is compiled inside the build.
 
 ## FAQ
 
