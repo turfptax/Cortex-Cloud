@@ -44,28 +44,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 
 log = logging.getLogger("plugin.overseer.chat_tools")
-
-# Agent harness (2026-07-11): the single succinct map of every screen
-# and feature. Lives at the repo root so it is tracked + deployed with
-# the code; served via the get_harness_map tool and the /harness-map
-# route, and injected into Discuss-with-Overseer thread seeds.
-HARNESS_MAP_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..",
-    "memory", "HARNESS_MAP.md"))
-
-
-def read_harness_map() -> str:
-    try:
-        with open(HARNESS_MAP_PATH, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        log.warning("harness map unreadable at %s: %s",
-                    HARNESS_MAP_PATH, e)
-        return ""
-
 
 # ── Tool definitions (OpenAI function-calling schema) ────────────
 
@@ -1207,7 +1187,6 @@ TOOL_DEFINITIONS: list[dict] = [
                 "  `n`     future_overseer_notes\n"
                 "  `j`     overseer_journal\n"
                 "  `b`     known_blindspots\n"
-                "  `dial`  dialectic_open\n"
                 "  `nar`   temporal_narratives\n"
                 "  `hj`    human_journal_entries\n"
                 "  `gp`    gist_prompts (Phase 1d)\n\n"
@@ -1372,22 +1351,6 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_harness_map",
-            "description": (
-                "The single succinct map of every screen and feature "
-                "in the Cortex harness (Hub pages, phone screens, Pi "
-                "subsystems). Call this when Tory references a screen "
-                "or feature you need to place, and ALWAYS when a "
-                "conversation was escalated from another surface via "
-                "'Discuss with Overseer' and you need to understand "
-                "what he was looking at."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "get_recent_feedback",
             "description": (
                 "Tory's meta-feedback on AI interactions: ratings "
@@ -1529,12 +1492,6 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
         return mcp_client.call_tool(db, name, args or {})
 
     # ── Agent harness (2026-07-11): self-development tools ────────
-    if name == "get_harness_map":
-        text = read_harness_map()
-        if not text:
-            return {"error": "HARNESS_MAP.md not found on this install"}
-        return {"map": text}
-
     if name == "get_recent_feedback":
         limit = max(1, min(100, int(args.get("limit", 20))))
         kind = (args.get("target_kind") or "").strip() or None
@@ -1622,7 +1579,6 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
                 "n": "future_overseer_notes",
                 "j": "overseer_journal",
                 "b": "known_blindspots",
-                "dial": "dialectic_open",
                 "nar": "temporal_narratives",
                 "hj": "human_journal_entries",
                 "gp": "gist_prompts",

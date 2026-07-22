@@ -45,7 +45,6 @@ from claude_jsonl import (
     parse_claude_code_jsonl,
 )
 from chat import respond_to_message, respond_via_router
-from dialectic import paired_generate, write_dialectic_row
 from prompts import recent_notes_gist_prompt
 from detail import resolve_detail, TokenError
 from distill_corrections import distill_uncondidated_corrections
@@ -419,8 +418,6 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/chat/prompts",          self._http_chat_prompts),
             Route("POST", "/chat/prompts/upsert",   self._http_chat_prompt_upsert),
             Route("POST", "/chat/prompts/delete",   self._http_chat_prompt_delete),
-            # ── Agent harness (2026-07-11): harness map ──────────
-            Route("GET",  "/harness-map",           self._http_harness_map),
             # ── Agent harness: interaction meta-feedback ─────────
             Route("GET",  "/feedback",              self._http_feedback_list),
             Route("POST", "/feedback",              self._http_feedback_add),
@@ -443,11 +440,6 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/budget",                self._http_budget),
             # Slice 14.7.2 (2026-05-26): manual cap override.
             Route("POST", "/budget/override",       self._http_budget_override),
-            # ── Slice 3f: dialectic checker ─────────────────────
-            Route("GET",  "/dialectic",             self._http_list_dialectic),
-            Route("GET",  "/dialectic/get",         self._http_get_dialectic),
-            Route("POST", "/dialectic/resolve",     self._http_resolve_dialectic),
-            Route("GET",  "/dialectic/counts",      self._http_dialectic_counts),
             # ── Slice 3f.5: overseer journal ────────────────────
             Route("GET",  "/journal",               self._http_journal),
             Route("POST", "/journal/reflect-now",   self._http_journal_reflect_now),
@@ -907,25 +899,13 @@ class OverseerPlugin(Plugin):
         body = "\n".join(lines)
         # Slice 3f.5 reframed prompt: gist drops everything but THE CHANGE
         prompt = recent_notes_gist_prompt(body=body)
-        # Slice 3f: paired generation when configured.
-        use_paired = bool(self.api.config.get(
-            "loop_paired_generation", True)) and not payload.get("backend")
-        paired = None
-        if use_paired:
-            paired = paired_generate(
-                llm=self.llm, prompt=prompt,
-                max_tokens=120, temperature=0.5,
-                purpose="summarize-recent",
-            )
-            result = paired["opus"]
-        else:
-            result = self.llm.complete(
-                prompt,
-                backend=payload.get("backend"),
-                max_tokens=120,
-                temperature=0.5,
-                purpose="summarize-recent",
-            )
+        result = self.llm.complete(
+            prompt,
+            backend=payload.get("backend"),
+            max_tokens=120,
+            temperature=0.5,
+            purpose="summarize-recent",
+        )
 
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error", "llm failed"),
@@ -939,18 +919,6 @@ class OverseerPlugin(Plugin):
             tags=["auto", "summarize-recent"],
         )
 
-        dialectic_id = None
-        if paired and paired.get("ok"):
-            try:
-                dialectic_id = write_dialectic_row(
-                    db=self.overseer_db, paired=paired,
-                    artifact_type="gist", artifact_id=gist_id,
-                    purpose="summarize-recent",
-                    source_context="recent {} notes".format(len(notes)),
-                )
-            except Exception as e:
-                self.api.log.warning("dialectic write failed: %s", e)
-
         return {
             "ok": True,
             "gist_id": gist_id,
@@ -961,9 +929,6 @@ class OverseerPlugin(Plugin):
             "latency_ms": result.get("latency_ms"),
             "cost_usd": result.get("cost_usd"),
             "degraded": result.get("degraded"),
-            "paired": bool(paired),
-            "dialectic_id": dialectic_id,
-            "diff": paired.get("diff") if paired else None,
         }
 
     def _http_themes(self, payload):
@@ -1246,7 +1211,6 @@ class OverseerPlugin(Plugin):
         "n":    "future_overseer_notes",
         "j":    "overseer_journal",
         "b":    "known_blindspots",
-        "dial": "dialectic_open",
         "nar":  "temporal_narratives",        # added 2026-05-27
         "hj":   "human_journal_entries",      # added 2026-05-27
     }
@@ -4592,17 +4556,6 @@ class OverseerPlugin(Plugin):
             return {"ok": False, "error": f"no such prompt: {pid}"}
         return {"ok": True, "deleted": pid}
 
-    # ── Agent harness (2026-07-11): harness map ──────────────────
-
-    def _http_harness_map(self, payload):
-        """GET /plugins/overseer/harness-map - the single succinct
-        map of every screen/feature. Updated with every feature."""
-        import chat_tools as _ct
-        text = _ct.read_harness_map()
-        if not text:
-            return {"ok": False, "error": "HARNESS_MAP.md not found"}
-        return {"ok": True, "map": text}
-
     # ── Agent harness (2026-07-11): interaction meta-feedback ────
     # Note-first by design (Tory: lightweight; "Discuss with
     # Overseer" is the SECONDARY option). Discuss threads MUST carry
@@ -4720,9 +4673,7 @@ class OverseerPlugin(Plugin):
             "",
             "Tory left feedback on an AI interaction and chose to "
             "discuss it with you. Be direct about what went wrong or "
-            "right and what to change; this feeds Cortex development. "
-            "Call get_harness_map if you need to place the surface he "
-            "was using.",
+            "right and what to change; this feeds Cortex development.",
             "",
             f"- Target: {fb.get('target_kind')} #{fb.get('target_id')}",
             f"- Rating: {rating_word}",
@@ -5074,131 +5025,6 @@ class OverseerPlugin(Plugin):
             "notification_id": nid, "action_kind": kind,
             "archived": archived,
         }
-
-    # ── Slice 3f: dialectic handlers ────────────────────────────
-
-    def _http_list_dialectic(self, payload):
-        """GET /plugins/overseer/dialectic
-        Filters: status (open|resolved|productive), severity
-        (none|minor|significant), artifact_type (gist|theme|episode|question)
-        """
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        status = (payload.get("status") or "").strip() or None
-        severity = (payload.get("severity") or "").strip() or None
-        artifact_type = (payload.get("artifact_type") or "").strip() or None
-        limit = _as_int(payload, "limit", 100, max_value=1000)
-        offset = _as_int(payload, "offset", 0, max_value=100000)
-        rows = self.overseer_db.list_dialectics(
-            status=status, severity=severity,
-            artifact_type=artifact_type,
-            limit=limit, offset=offset,
-        )
-        # Trim long text fields in list view; full text via /dialectic/get
-        for r in rows:
-            for k in ("opus_text", "gemma_text", "source_context"):
-                v = r.get(k) or ""
-                if len(v) > 280:
-                    r[k] = v[:280] + " …"
-        return {
-            "ok": True,
-            "dialectics": rows,
-            "counts": self.overseer_db.dialectic_counts(),
-        }
-
-    def _http_get_dialectic(self, payload):
-        """GET /plugins/overseer/dialectic/get?id=N - full text both sides."""
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        nid = payload.get("id")
-        if nid is None:
-            return {"ok": False, "error": "missing 'id'"}
-        try:
-            row = self.overseer_db.get_dialectic(int(nid))
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "id must be an integer"}
-        if not row:
-            return {"ok": False, "error": "no such dialectic"}
-        return {"ok": True, "dialectic": row}
-
-    def _http_resolve_dialectic(self, payload):
-        """POST /plugins/overseer/dialectic/resolve
-
-        Body: {"id": N, "resolution": "opus"|"gemma"|"third"|"productive",
-               "resolution_text": "..." (only required for 'third')}
-        """
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        nid = payload.get("id")
-        resolution = (payload.get("resolution") or "").strip().lower()
-        text = (payload.get("resolution_text") or "").strip()
-        if nid is None or resolution not in (
-                "opus", "gemma", "third", "productive"):
-            return {"ok": False,
-                    "error": "id and resolution required; resolution must be "
-                             "opus|gemma|third|productive"}
-        if resolution == "third" and not text:
-            return {"ok": False,
-                    "error": "resolution='third' requires resolution_text"}
-        try:
-            ok = self.overseer_db.resolve_dialectic(
-                int(nid), resolution=resolution,
-                resolution_text=text, resolved_by="user")
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
-        if not ok:
-            return {"ok": False,
-                    "error": "no open dialectic with that id"}
-
-        # 3i CP2: log a correction against the LOSING model so the
-        # distill pass can learn from the user's call. 'productive'
-        # means "valuable disagreement, keep both" - no error to log.
-        # 'third' means user proposed something neither model said -         # log against both.
-        correction_ids = []
-        try:
-            d = self.overseer_db.get_dialectic(int(nid))
-            if d:
-                if resolution in ("opus", "gemma"):
-                    losing = "gemma" if resolution == "opus" else "opus"
-                    cid = self.overseer_db.log_correction(
-                        model=d.get(losing + "_model") or "",
-                        artifact_table="dialectic_open",
-                        artifact_id=int(nid),
-                        topic=(d.get("source_context") or "")[:120],
-                        what_was_wrong=(d.get(losing + "_text") or "")[:1000],
-                        user_correction="user picked {} over {}".format(
-                            resolution, losing),
-                        severity="med",
-                        source="dialectic-resolution",
-                    )
-                    correction_ids.append(cid)
-                elif resolution == "third":
-                    for losing in ("opus", "gemma"):
-                        cid = self.overseer_db.log_correction(
-                            model=d.get(losing + "_model") or "",
-                            artifact_table="dialectic_open",
-                            artifact_id=int(nid),
-                            topic=(d.get("source_context") or "")[:120],
-                            what_was_wrong=(d.get(losing + "_text") or "")[:1000],
-                            user_correction=text[:2000],
-                            severity="med",
-                            source="dialectic-resolution",
-                        )
-                        correction_ids.append(cid)
-        except Exception as e:
-            log.exception("dialectic correction logging failed: %s", e)
-
-        return {
-            "ok": True,
-            "dialectic": self.overseer_db.get_dialectic(int(nid)),
-            "correction_ids": correction_ids,
-        }
-
-    def _http_dialectic_counts(self, payload):
-        """GET /plugins/overseer/dialectic/counts"""
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        return {"ok": True, "counts": self.overseer_db.dialectic_counts()}
 
     def _http_journal_reflect_now(self, payload):
         """POST /plugins/overseer/journal/reflect-now
