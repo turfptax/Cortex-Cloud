@@ -14,7 +14,6 @@ import { useVoiceMode } from '../../hooks/useVoiceMode'
 import { useCloudMode } from '../../hooks/useCloudMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
-import { InsightsPanel } from './panels/InsightsPanel'
 import { WorkingMemoryView } from './panels/WorkingMemoryView'
 import { Card, PanelLoading, SourceBadge } from './panels/widgets'
 import { StatCard, Row } from './panels/WorkingMemoryView'
@@ -52,11 +51,6 @@ import {
   type BudgetSnapshot,
   type BudgetResp,
   type BlindspotRow,
-  type PendingInterpretation,
-  type InsightScanRow,
-  type InsightScansResp,
-  type InsightPendingResp,
-  type InsightScanResp,
   fmtBytes,
   fmtDuration,
   fmtRelative,
@@ -71,10 +65,10 @@ import {
 // Dialectic sunset (writer off since 2026-05-24) and replaced by
 // Squeeze (AI report card from graded dispatches); Classify folded
 // into the Projects tab.
-type Tab = 'overview' | 'chat' | 'squeeze' | 'insights' | 'projects' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts' | 'voice'
+type Tab = 'overview' | 'chat' | 'squeeze' | 'projects' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts' | 'voice'
 
 const CORPUS_TABS: readonly Tab[] = [
-  'overview', 'insights', 'projects', 'squeeze',
+  'overview', 'projects', 'squeeze',
   'ecosystem', 'explorer', 'notifications', 'contacts', 'voice',
 ]
 
@@ -149,16 +143,6 @@ export function OverseerPage() {
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
   const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
   const [expandedToken, setExpandedToken] = useState<string | null>(null)
-  // Slice 3h: insight queue state
-  const [insights, setInsights] = useState<PendingInterpretation[]>([])
-  const [insightCounts, setInsightCounts] = useState<InsightPendingResp['counts']>(undefined)
-  const [insightScanProject, setInsightScanProject] = useState<string>('')
-  const [insightScanDays, setInsightScanDays] = useState<number>(7)
-  const [insightStatusFilter, setInsightStatusFilter] = useState<string>('pending')
-  const [editingInsightId, setEditingInsightId] = useState<number | null>(null)
-  const [editTitle, setEditTitle] = useState<string>('')
-  const [editBody, setEditBody] = useState<string>('')
-  const [insightScansHistory, setInsightScansHistory] = useState<InsightScanRow[]>([])
   // Polish CP1: Explorer tab state
   const [graph, setGraph] = useState<GraphResp | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
@@ -463,142 +447,6 @@ export function OverseerPage() {
     }
   }
 
-  const refreshInsights = async (status: string = insightStatusFilter) => {
-    try {
-      const q = status ? `?status=${encodeURIComponent(status)}` : ''
-      const [pending, scans] = await Promise.all([
-        apiFetch<InsightPendingResp>(`/overseer/insight/pending${q}`),
-        apiFetch<InsightScansResp>(`/overseer/insight/scans?limit=15`),
-      ])
-      setInsights(pending.interpretations || [])
-      setInsightCounts(pending.counts)
-      setInsightScansHistory(scans.scans || [])
-    } catch (e: any) {
-      setError(`Insights refresh failed: ${e?.message || e}`)
-    }
-  }
-
-  const handleInsightScanNow = async () => {
-    if (!insightScanProject.trim()) {
-      setError('Pick a project tag to scan (e.g. UFOSINT)')
-      return
-    }
-    setBusy(`Scanning ${insightScanProject}…`)
-    setError('')
-    setLastAction('')
-    try {
-      const r = await apiFetch<InsightScanResp>('/overseer/insight/scan-now', {
-        method: 'POST',
-        body: JSON.stringify({
-          project: insightScanProject.trim(),
-          days: insightScanDays,
-        }),
-      })
-      if (!r.ok) {
-        setError(`Scan failed: ${r.error || 'unknown'}`)
-      } else if ((r.candidates_proposed || 0) === 0) {
-        setLastAction(
-          `Scan complete: ${r.gists_seen} gists seen, no new candidates ` +
-          `(deduped: ${r.candidates_deduped ?? 0}, cost $${(r.cost_usd ?? 0).toFixed(4)}).` +
-          (r.note ? ` ${r.note}` : ''),
-        )
-      } else {
-        setLastAction(
-          `Scan proposed ${r.candidates_proposed} candidates ` +
-          `(${r.gists_seen} gists, $${(r.cost_usd ?? 0).toFixed(4)}).`,
-        )
-      }
-      await refreshInsights('pending')
-    } catch (e: any) {
-      setError(`Scan failed: ${e?.message || e}`)
-    } finally {
-      setBusy('')
-    }
-  }
-
-  const handleDistillCorrections = async () => {
-    setBusy('Distilling corrections…')
-    setError('')
-    setLastAction('')
-    try {
-      const r = await apiFetch<{
-        ok: boolean
-        corrections_seen?: number
-        candidates_proposed?: number
-        candidates_deduped?: number
-        cost_usd?: number
-        note?: string
-        error?: string
-      }>('/overseer/insight/distill-corrections', {
-        method: 'POST',
-      })
-      if (!r.ok) {
-        setError(`Distill failed: ${r.error || 'unknown'}`)
-      } else if ((r.candidates_proposed || 0) === 0) {
-        setLastAction(
-          `Distill: ${r.corrections_seen ?? 0} corrections seen, no new ` +
-          `blindspot candidates (deduped: ${r.candidates_deduped ?? 0}, ` +
-          `cost $${(r.cost_usd ?? 0).toFixed(4)})` +
-          (r.note ? `. ${r.note}` : '.'),
-        )
-      } else {
-        setLastAction(
-          `Distill proposed ${r.candidates_proposed} blindspot candidate(s) ` +
-          `from ${r.corrections_seen} corrections ($${(r.cost_usd ?? 0).toFixed(4)}).`,
-        )
-      }
-      await refreshInsights('pending')
-    } catch (e: any) {
-      setError(`Distill failed: ${e?.message || e}`)
-    } finally {
-      setBusy('')
-    }
-  }
-
-  const handleInsightDecide = async (
-    id: number,
-    decision: 'confirm' | 'reject' | 'edit-and-confirm',
-    overrides: { edit_title?: string; edit_body?: string; review_note?: string } = {},
-  ) => {
-    setBusy(`Applying decision…`)
-    setError('')
-    try {
-      const r = await apiFetch<{
-        ok: boolean
-        status?: string
-        applied_table?: string
-        applied_id?: number
-        error?: string
-      }>('/overseer/insight/decide', {
-        method: 'POST',
-        body: JSON.stringify({ id, decision, ...overrides }),
-      })
-      if (!r.ok) {
-        setError(`Decide failed: ${r.error || 'unknown'}`)
-      } else if (decision === 'reject') {
-        setLastAction(`Rejected #${id}.`)
-      } else if (r.applied_table) {
-        setLastAction(
-          `Confirmed #${id} → landed in ${r.applied_table}#${r.applied_id}.`,
-        )
-      } else {
-        setLastAction(`#${id} → ${r.status}`)
-      }
-      setEditingInsightId(null)
-      await refreshInsights(insightStatusFilter)
-      // The working memory now contains a new pattern/drift/theme,
-      // so refresh that too so it shows up in the Overview.
-      try {
-        const wmResp = await apiFetch<WorkingMemoryResp>('/overseer/working-memory')
-        setWm(wmResp)
-      } catch {}
-    } catch (e: any) {
-      setError(`Decide failed: ${e?.message || e}`)
-    } finally {
-      setBusy('')
-    }
-  }
-
   useEffect(() => {
     refreshAll()
     // Perf (2026-07-11): refreshAll is 8 Pi-proxied calls. Skip the
@@ -623,7 +471,6 @@ export function OverseerPage() {
       refreshThreads()
       refreshPrompts()
     }
-    if (tab === 'insights') refreshInsights(insightStatusFilter)
     if (tab === 'explorer' && !graph) refreshGraph()
   }, [tab])
 
@@ -788,7 +635,6 @@ export function OverseerPage() {
     '- `/budget` — alias for /cost',
     '- `/tick` — force an overseer loop tick now',
     '- `/whoami` — working memory snapshot (freshness + posture)',
-    '- `/insights` — list pending interpretations',
     '- `/sibling-status` — A-channel dispatch counters',
     '',
     'Commands run locally (no LLM cost). Overseer can still see results in their next turn.',
@@ -946,31 +792,6 @@ export function OverseerPage() {
           )
         } catch (e: any) {
           pushSlashSystemMessage(`**/whoami failed:** ${e?.message || e}`)
-        }
-        return true
-      }
-      case '/insights': {
-        try {
-          const r = await apiFetch<{
-            interpretations?: Array<{
-              id: number
-              kind: string
-              title: string
-              status: string
-            }>
-            counts?: Record<string, number>
-          }>('/overseer/insight/pending?status=pending')
-          const items = r.interpretations || []
-          const lines = ['## Pending interpretations', '']
-          if (items.length === 0) lines.push('_(none — all reviewed)_')
-          else
-            items.slice(0, 20).forEach((it) =>
-              lines.push(`- **#${it.id}** [${it.kind}] ${it.title}`),
-            )
-          if (items.length > 20) lines.push('', `_(+${items.length - 20} more)_`)
-          pushSlashSystemMessage(lines.join('\n'))
-        } catch (e: any) {
-          pushSlashSystemMessage(`**/insights failed:** ${e?.message || e}`)
         }
         return true
       }
@@ -1444,7 +1265,6 @@ export function OverseerPage() {
             <div className="flex gap-1 bg-surface-tertiary rounded-lg p-0.5">
               {([
                 ['overview', 'Overview'],
-                ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['projects', 'Projects'],
                 ['squeeze', 'Squeeze'],
                 ['ecosystem', 'Map'],
@@ -1561,40 +1381,6 @@ export function OverseerPage() {
       )}
       {tab === 'squeeze' && (
         <SqueezePanel />
-      )}
-      {tab === 'insights' && (
-        <InsightsPanel
-          interpretations={insights}
-          counts={insightCounts}
-          scans={insightScansHistory}
-          statusFilter={insightStatusFilter}
-          setStatusFilter={(s) => {
-            setInsightStatusFilter(s)
-            refreshInsights(s)
-          }}
-          scanProject={insightScanProject}
-          setScanProject={setInsightScanProject}
-          scanDays={insightScanDays}
-          setScanDays={setInsightScanDays}
-          onScanNow={handleInsightScanNow}
-          onDistillCorrections={handleDistillCorrections}
-          onDecide={handleInsightDecide}
-          editingId={editingInsightId}
-          setEditing={(id, title, body) => {
-            setEditingInsightId(id)
-            setEditTitle(title)
-            setEditBody(body)
-          }}
-          editTitle={editTitle}
-          editBody={editBody}
-          setEditTitle={setEditTitle}
-          setEditBody={setEditBody}
-          onTokenClick={(t) => {
-            setTab('overview')
-            setExpandedToken(t)
-          }}
-          busy={busy}
-        />
       )}
       {tab === 'overview' && (
       <div className="flex-1 overflow-y-auto p-6 space-y-6">

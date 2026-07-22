@@ -48,7 +48,6 @@ from chat import respond_to_message, respond_via_router
 from dialectic import paired_generate, write_dialectic_row
 from prompts import recent_notes_gist_prompt
 from detail import resolve_detail, TokenError
-from insight_scan import scan_project_arcs, apply_pending_interpretation
 from distill_corrections import distill_uncondidated_corrections
 import project_summary
 import project_narrative
@@ -466,10 +465,7 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/corrections",           self._http_list_corrections),
             # ── Slice 3g checkpoint 2: drill-down ────────────────
             Route("GET",  "/detail",                self._http_detail),
-            # ── Slice 3h: insight generation ─────────────────────
-            Route("POST", "/insight/scan-now",      self._http_insight_scan_now),
-            Route("GET",  "/insight/pending",       self._http_insight_pending),
-            Route("POST", "/insight/decide",        self._http_insight_decide),
+            # ── insight scan history (read-only over insight_scans) ──
             Route("GET",  "/insight/scans",         self._http_insight_scans),
             # ── Slice 3i CP2: distill corrections → blindspots ──
             Route("POST", "/insight/distill-corrections",
@@ -1296,94 +1292,7 @@ class OverseerPlugin(Plugin):
                 )
         return result
 
-    # ── Slice 3h: insight generation ───────────────────────────
-
-    def _http_insight_scan_now(self, payload):
-        """POST /plugins/overseer/insight/scan-now
-        Body: {"project": "<tag>", "days": 7}
-        Manually triggers an insight scan for one project.
-        Cost-capped (defaults to insight_scan_max_cost_usd_per_scan).
-        """
-        if self.overseer_db is None or self.llm is None:
-            return {"ok": False, "error": "overseer not fully initialized"}
-        project = str(payload.get("project", "")).strip()
-        if not project:
-            return {"ok": False, "error": "project is required"}
-        days = _as_int(payload, "days", int(self.api.config.get(
-            "insight_scan_default_days", 7)), max_value=90)
-        max_cost = float(self.api.config.get(
-            "insight_scan_max_cost_usd_per_scan", 0.05))
-        try:
-            return scan_project_arcs(
-                db=self.overseer_db, llm=self.llm, project=project,
-                days=days, max_cost_usd=max_cost,
-                budget=None,  # manual trigger; daily cap still applies upstream
-                triggered_by="manual",
-            )
-        except Exception as e:
-            log.exception("insight scan-now failed")
-            return {"ok": False, "error": "scan failed: " + str(e)}
-
-    def _http_insight_pending(self, payload):
-        """GET /plugins/overseer/insight/pending
-            ?status=pending|confirmed|rejected|edited
-            ?kind=theme|pattern|drift
-            ?project=<tag>
-            ?limit=200"""
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        status = str(payload.get("status", "") or "").strip() or None
-        kind = str(payload.get("kind", "") or "").strip() or None
-        project = str(payload.get("project", "") or "").strip() or None
-        limit = _as_int(payload, "limit", 200, max_value=1000)
-        rows = self.overseer_db.list_pending_interpretations(
-            status=status, kind=kind, project=project, limit=limit,
-        )
-        # Counts for the UI (for status pills).
-        all_pending = self.overseer_db.list_pending_interpretations(
-            status="pending", limit=10000)
-        all_confirmed = self.overseer_db.list_pending_interpretations(
-            status="confirmed", limit=10000)
-        all_rejected = self.overseer_db.list_pending_interpretations(
-            status="rejected", limit=10000)
-        all_edited = self.overseer_db.list_pending_interpretations(
-            status="edited", limit=10000)
-        return {
-            "ok": True,
-            "interpretations": rows,
-            "counts": {
-                "pending": len(all_pending),
-                "confirmed": len(all_confirmed),
-                "rejected": len(all_rejected),
-                "edited": len(all_edited),
-            },
-        }
-
-    def _http_insight_decide(self, payload):
-        """POST /plugins/overseer/insight/decide
-        Body: {"id": int, "decision": "confirm"|"reject"|"edit-and-confirm",
-               "edit_title"?: str, "edit_body"?: str,
-               "review_note"?: str, "reviewed_by"?: str}
-        On confirm: creates a real row in patterns/drift/themes.
-        """
-        if self.overseer_db is None:
-            return {"ok": False, "error": "overseer not initialized"}
-        interp_id = _as_int(payload, "id", 0)
-        if not interp_id:
-            return {"ok": False, "error": "id is required"}
-        try:
-            return apply_pending_interpretation(
-                db=self.overseer_db,
-                interp_id=interp_id,
-                decision=str(payload.get("decision", "")),
-                reviewed_by=str(payload.get("reviewed_by", "user")),
-                review_note=str(payload.get("review_note", "")),
-                edit_title=str(payload.get("edit_title", "")),
-                edit_body=str(payload.get("edit_body", "")),
-            )
-        except Exception as e:
-            log.exception("insight decide failed")
-            return {"ok": False, "error": "decide failed: " + str(e)}
+    # ── insight scan history (read-only over insight_scans) ─────
 
     def _http_insight_scans(self, payload):
         """GET /plugins/overseer/insight/scans?project=<tag>&limit=20"""
@@ -2437,11 +2346,6 @@ class OverseerPlugin(Plugin):
              "uses_llm": True,
              "description": "Slice 9.9: first-person reflection WITH "
                             "tool access. Most tools callable here."},
-            {"id": 10, "name": "insight_scans",
-             "label": "Step 6: Insight Scans",
-             "fires_when": "per-project cadence",
-             "uses_llm": True,
-             "description": "Sonnet scans gist arcs for theme/pattern/drift."},
             {"id": 11, "name": "distill_corrections",
              "label": "Step 7: Distill Corrections",
              "fires_when": "periodic (loop config)",
@@ -4659,8 +4563,6 @@ class OverseerPlugin(Plugin):
                 temperature=float(payload.get("temperature", 0.7)),
                 max_history_turns=_as_int(
                     payload, "max_history_turns", 20, 100),
-                insight_snippet_enabled=bool(self.api.config.get(
-                    "insight_chat_snippet_enabled", True)),
                 attachments=attachments,
                 uploads_dir=UPLOADS_DIR,
                 # Slice 9.3: cap on dispatch_sibling calls from chat tools

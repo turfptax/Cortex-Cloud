@@ -58,7 +58,6 @@ from journal import write_tick_journal_entry
 from question_routing import route_evidence_to_questions
 from blindspots import applicable_blindspots
 from detail import make_token
-from insight_scan import scan_project_arcs, select_eligible_projects
 from distill_corrections import distill_uncondidated_corrections
 import project_summary
 import project_narrative
@@ -731,21 +730,6 @@ class OverseerLoop:
             except Exception as e:
                 self._log.exception("journal step failed: %s", e)
                 summary["errors"].append("journal: " + str(e)[:200])
-
-        # ── Step 6: insight scans (3h CP2) ───────────────────
-        # Conservative auto-loop: Sonnet reads gist arcs for projects
-        # that haven't been scanned in N hours, proposes new theme/
-        # pattern/drift candidates. Capped per-project AND per-tick.
-        # Default policy is "active+human" - automation projects
-        # require explicit opt-in. Manual /insight/scan-now ignores
-        # all of this and works on any tag.
-        if (self._cfg.get("insight_loop_enabled", True)
-                and not budget.exhausted()):
-            try:
-                self._run_insight_scans(budget=budget, summary=summary)
-            except Exception as e:
-                self._log.exception("insight scan step failed: %s", e)
-                summary["errors"].append("insight: " + str(e)[:200])
 
         # ── Step 7: distill corrections (3i CP2) ─────────────
         # Periodic Sonnet pass that clusters uncondidated user
@@ -1667,71 +1651,6 @@ class OverseerLoop:
                         "rollup %s/%s failed: %s", project, d, e)
                     summary.setdefault("rollups_failed", 0)
                     summary["rollups_failed"] += 1
-
-    # ── Step 6: insight scans (3h CP2) ──────────────────────────
-
-    def _run_insight_scans(self, *, budget: TickBudget, summary: dict):
-        """Pick a few projects due for an insight scan and run them.
-
-        Conservative on purpose: caps per-tick (max_projects), per-
-        project cadence (scan_interval_hours), and project policy
-        (active+human only by default). The daily budget caps the
-        whole thing on top.
-        """
-        policy = str(self._cfg.get(
-            "insight_loop_project_policy", "active+human"))
-        if policy == "never":
-            return
-        interval = int(self._cfg.get(
-            "insight_loop_scan_interval_hours", 24))
-        max_per_tick = int(self._cfg.get(
-            "insight_loop_max_projects_per_tick", 2))
-        max_cost = float(self._cfg.get(
-            "insight_scan_max_cost_usd_per_scan", 0.05))
-        days = int(self._cfg.get(
-            "insight_scan_default_days", 7))
-
-        projects = select_eligible_projects(
-            db=self._db, policy=policy,
-            scan_interval_hours=interval, max_projects=max_per_tick,
-        )
-
-        summary["insight_projects_eligible"] = len(projects)
-        if not projects:
-            return
-
-        total_proposed = 0
-        total_deduped = 0
-        scans_done = 0
-        for project in projects:
-            if budget.exhausted():
-                summary["errors"].append(
-                    "insight: budget exhausted after %d scan(s)" % scans_done)
-                break
-            try:
-                r = scan_project_arcs(
-                    db=self._db, llm=self._llm, project=project,
-                    days=days, max_cost_usd=max_cost,
-                    budget=budget,
-                    triggered_by="loop",
-                )
-            except Exception as e:
-                self._log.exception(
-                    "insight scan for %s failed: %s", project, e)
-                summary["errors"].append(
-                    "insight:%s: %s" % (project, str(e)[:140]))
-                continue
-            scans_done += 1
-            if r.get("ok"):
-                total_proposed += int(r.get("candidates_proposed") or 0)
-                total_deduped += int(r.get("candidates_deduped") or 0)
-            else:
-                summary["errors"].append(
-                    "insight:%s: %s" % (project, r.get("error", "")[:140]))
-
-        summary["insight_scans_run"] = scans_done
-        summary["insight_candidates_proposed"] = total_proposed
-        summary["insight_candidates_deduped"] = total_deduped
 
     # ── Step 7: distill corrections (3i CP2) ────────────────────
 
