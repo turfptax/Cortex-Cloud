@@ -90,7 +90,9 @@ Each connection has:
 - **`level`**: `none` (metadata only, the default) or `full` (whole corpus).
   (`work`/`personal` tiers are a future addition; treat `level` as an open enum.)
 - **`approval_policy`**: `ask` (a new/re-connection lands `pending` and must be
-  confirmed) or `always` (auto-approved to its level).
+  confirmed) or `always` (auto-approved to its level). New grants default to the
+  durable `always`, so an approved connection stays approved across reconnects;
+  `ask` is opt-in.
 - **`status`**: `pending` (needs the owner's confirmation), `active`, or `revoked`.
 
 Suggested UI: a list with a badge for `status=pending` items ("N connections

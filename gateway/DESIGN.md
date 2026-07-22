@@ -18,9 +18,12 @@
 > - **Overseer loop:** relocates to an Azure worker/Job (no more Pi).
 > - **Domain/TLS:** Azure-managed cert; Cloudflare DNS/WAF optional *in front*.
 >
-> Everything else in this contract (auth model §4, REST §5, MCP §6, sensitivity
-> §8) is unchanged. See `HANDOFF_cortex_phone_cloud.md` §8 and
-> `deploy/azure-deploy.md` for the current deployment design. Read §2/§9/§10
+> The REST surface (§5) and sensitivity model (§8) still hold. Auth (§4) and the
+> MCP surface (§6) have since changed and are updated in place below: the MCP
+> surface is now 14 tools (not the six first sketched in §6), and connector
+> authorization moved to the per-connection `connector_grants` approval model
+> (see `docs/CONNECTOR_GRANTS_DESIGN.md`). See `HANDOFF_cortex_phone_cloud.md` §8
+> and `deploy/azure-deploy.md` for the current deployment design. Read §2/§9/§10
 > below as historical (the Pi-era plan).
 
 ---
@@ -93,8 +96,13 @@ Single-user system (Tory's accounts), but internet-facing → must be real.
 **Phase 1 - bearer tokens (ship first):**
 - One opaque token per client, stored hashed in a new `gateway_tokens` table
   (`id, name, token_hash, scopes, created_at, last_used_at, revoked_at`).
-- `Authorization: Bearer <token>`. Scopes: `app` (full REST), `connector:read`
-  (MCP search/fetch/read/list/graph/recent), `connector:write` (adds ingest).
+- `Authorization: Bearer <token>`. Scopes: `app` (full REST) and the connector
+  scopes `connector:read` / `connector:write`. NB (2026-07): a connector's reads
+  AND writes are both gated by the per-connection `connector_grants` approval,
+  not by the scope string. A connection the owner approved to `full`
+  (`has_full_access`) reads the corpus and, through `grants.can_write`, writes to
+  it too; approval grants both. The `connector:write` scope now matters only for
+  static CLI tokens. See `docs/CONNECTOR_GRANTS_DESIGN.md`.
 - Each connector (Claude / ChatGPT / Grok) gets its own named token →
   per-service revocation + per-service pull auditing.
 - Works today for: Grok custom MCP, ChatGPT (URL + token), Claude API connector.
@@ -150,8 +158,18 @@ session management per the 2026 spec. One endpoint, e.g. `/mcp`.
 
 *Richer Cortex tools (Claude / Grok / dev-mode ChatGPT):*
 `cortex_search` (layered returns: abstractions→gists→raw_refs),
-`cortex_read(token)`, `cortex_list(folder)`, `cortex_graph(entity,depth)`,
-`cortex_recent(days)`, `cortex_ingest(content,kind,tags,project)`.
+`cortex_read(token)`, `cortex_recent(days)`,
+`cortex_ingest(content,kind,tags,project)`.
+
+*Pillar tools (Projects / Rules / Skills as first-class):*
+reads `cortex_projects_list`, `cortex_project_get`, `cortex_rules_list`,
+`cortex_skills_list`, `cortex_skill_get`; writes `cortex_project_upsert`,
+`cortex_rule_add`, `cortex_skill_log`. People is owner-only and not exposed
+here; the project narrative + `collaborators` are withheld.
+
+Fourteen tools total: the `search`/`fetch` pair above plus these twelve. Writes
+work for any approved connection (see §4); reads and writes share the same
+`connector_grants` gate.
 
 **Never exposed on the public MCP:** `shell_exec`, `wifi_*`, raw
 `query/upsert/delete`, `pet_*`, sibling/admin tools. Those stay LAN/admin-only.

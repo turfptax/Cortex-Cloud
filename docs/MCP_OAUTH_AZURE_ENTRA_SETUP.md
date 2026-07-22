@@ -34,7 +34,8 @@ authorization code -> `POST /oauth/token` (code + PKCE verifier) -> access token
   `GATEWAY_OAUTH_TOKEN_TTL=86400`, `DB_URL=mssql+pymssql://...`,
   `SCM_DO_BUILD_DURING_DEPLOYMENT=true`. Optional:
   `GATEWAY_OAUTH_ALLOWED_REDIRECTS` (lock-down), `GATEWAY_OAUTH_ALLOW_WRITE`
-  (default off = read-only connectors), `GATEWAY_DEBUG` (tracing).
+  (default off; controls only whether the `connector:write` scope string is
+  minted, not whether an approved connector can write), `GATEWAY_DEBUG` (tracing).
 
 **Easy Auth (authV2), single-tenant:**
 - AAD provider `cortex-gw-auth`, `signInAudience: AzureADMyOrg`, issuer
@@ -108,8 +109,11 @@ authorization code -> `POST /oauth/token` (code + PKCE verifier) -> access token
 - **Enable / disable OAuth:** `GATEWAY_OAUTH_ENABLED` (cold restart).
 - **Lock down clients:** set `GATEWAY_OAUTH_ALLOWED_REDIRECTS` to the exact
   callbacks above; registration and authorize then reject any other redirect.
-- **Read vs write:** connectors are read-only by default; set
-  `GATEWAY_OAUTH_ALLOW_WRITE=1` to let them request `connector:write`.
+- **Read vs write:** an approved connection (`level=full`) can read AND write;
+  approval grants both, and writes are additive (never destructive).
+  `GATEWAY_OAUTH_ALLOW_WRITE=1` only controls whether the `connector:write` scope
+  string is minted (relevant to static CLI tokens), not whether an approved
+  connector can write.
 - **Tokens are short-lived (24h)** and re-auth via the flow; there is no refresh
   token yet.
 - **What's connected:** the `connector_connections` table in the canonical DB
@@ -160,11 +164,15 @@ just for humans. Conventions we follow (MCP spec 2025-11-25):
   memory") shown in connector UIs alongside the machine `name`.
 - **Behavioral annotations** (`ToolAnnotations`) on every tool, so clients can
   auto-approve safe reads and confirm on writes:
-  - reads (`search`, `fetch`, `cortex_search`, `cortex_read`, `cortex_recent`)
+  - reads (`search`, `fetch`, `cortex_search`, `cortex_read`, `cortex_recent`,
+    plus the pillar reads `cortex_projects_list`, `cortex_project_get`,
+    `cortex_rules_list`, `cortex_skills_list`, `cortex_skill_get`)
     → `readOnlyHint=true`, `openWorldHint=false` (closed corpus); the
     deterministic ones also `idempotentHint=true`.
-  - `cortex_ingest` (write) → `readOnlyHint=false`, `destructiveHint=false`
-    (additive, never deletes), `openWorldHint=false`.
+  - writes (`cortex_ingest`, plus the pillar writes `cortex_project_upsert`,
+    `cortex_rule_add`, `cortex_skill_log`) → `readOnlyHint=false`,
+    `destructiveHint=false` (additive, never deletes), `openWorldHint=false`.
+    They work for any approved connection.
   - Annotations are hints, not security; the real controls are scope +
     sensitivity gating. Unannotated tools default to destructive + open-world,
     the most restrictive, so setting them improves both UX and confidence.

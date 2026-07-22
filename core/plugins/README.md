@@ -14,12 +14,13 @@ plugins/
     └── tests/
 ```
 
-See `../../notes/plugin-interface-sketch.md` for the full v0 design.
+See `../src/plugin_api.py` for the plugin interface (the `Plugin` and
+`PluginAPI` contract).
 
 Discovery is filesystem-driven: a plugin is loaded if and only if its
 directory contains a `plugin.toml` with `enabled = true`. Disable a
 plugin by flipping that flag or removing the folder.
 
-v0 status: discovery scans and logs found plugins. Actual loading and
-API wiring land in the next extraction slice when the first plugin
-(pet) arrives.
+v0 status: discovery AND loading are live. `src/plugins_runtime.py`
+`discover_and_load()` scans this directory, imports each enabled plugin,
+and calls its `register(api)` to wire it into the runtime.

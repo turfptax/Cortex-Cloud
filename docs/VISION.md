@@ -8,7 +8,8 @@ trapped in one chat product.
 ```
    any AI provider  <-->  MCP  <-->  your Cortex
                             |
-      exposes ──►  Memory · Projects · People · Rules · Skills · Plans
+      exposes ──►  Memory · Projects · Rules · Skills
+                   (People: owner-only, not over MCP; Plans: not yet exposed)
                             |
       kept alive by ─►  Overseer (curates)   Lemon Squeezer (learns)   Simples (plans)
 ```
@@ -16,7 +17,9 @@ trapped in one chat product.
 ## The five pillars
 
 Cortex organizes what it remembers into five things. The design goal is
-for every one of them to be reachable both in the web Hub and over MCP.
+for every one of them to be reachable both in the web Hub and over MCP,
+with People the deliberate standing exception (owner-only, not exposed
+over MCP).
 
 - **Memory**: the corpus, layered from summaries down to raw source, and
   searchable by meaning and by keyword.
@@ -44,9 +47,10 @@ with you.
 The organizing principle is that the MCP surface is the product. Work is
 ordered by how directly it makes the pillars reachable from any AI.
 
-1. **Pillars as MCP tools.** Memory is exposed today; Projects, People,
-   Rules, and Skills become first-class MCP tools next, so any connected
-   AI can use them.
+1. **Pillars as MCP tools.** SHIPPED: Memory, Projects, Rules, and Skills
+   are first-class MCP tools today, with read and write for an approved
+   connection. People is the deliberate exception, kept owner-only and off
+   MCP.
 2. **The lessons loop.** Lemon Squeezer runs in the background, turning
    every interaction into Rules and Skills served to every AI via
    `/intro`.

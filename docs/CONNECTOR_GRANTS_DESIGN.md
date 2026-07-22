@@ -51,8 +51,8 @@ connector carries an `approval_policy`:
 
 | Policy | On a NEW connection (a new OAuth token minted for this connector) |
 |---|---|
-| **`ask`** (default) | The connection enters `pending`, the owner is notified, and it stays at `none` until the owner confirms it in the app. |
-| **`always`** | Auto-approved to the connector's remembered `level`, no prompt. |
+| **`always`** (default, durable) | Once the owner approves the connection it stays `active` at its remembered `level` across reconnects, no re-prompt. A brand-new connection still starts `pending` at `none` until that first approval. |
+| **`ask`** (opt-in) | Every new connection (each token mint) re-enters `pending` and stays at `none` until the owner re-confirms it in the app. |
 
 A "connection" is one connector identity; a "connection attempt" is a token
 mint. The pending record surfaces exactly who is asking: name, redirect host,
@@ -84,7 +84,7 @@ the 24h token re-mint; the object the app lists and edits.
 | `name` | string | Display name (`oauth_clients.client_name`). |
 | `redirect_host` | string | e.g. `grok.com` (for display + stable identity). |
 | `level` | string | `none` \| `full` (v1). Default `none`. |
-| `approval_policy` | string | `ask` \| `always`. Default `ask`. |
+| `approval_policy` | string | `ask` \| `always`. Default `always` (durable); `ask` is opt-in. |
 | `status` | string | `pending` \| `active` \| `revoked`. Default `pending`. |
 | `first_connected_at` | datetime | First seen. |
 | `last_connected_at` | datetime | Most recent token mint. |
@@ -100,7 +100,7 @@ resolves the grant directly.
 ### Lifecycle wiring
 
 On each successful token mint (`oauth.token()`): upsert the `connector_grants`
-row. New client_id -> create `pending`/`ask`/`none`. Known + `always` ->
+row. New client_id -> create `pending`/`always`/`none`. Known + `always` ->
 refresh `last_connected_at`, keep `active`. Known + `ask` -> set `pending` again
 and re-notify (a re-connection is a fresh consent event).
 
@@ -190,10 +190,14 @@ interim `GATEWAY_CONNECTOR_FULL_HOSTS` is removed at that point.
 - API auth scope: specced as `app` (phone). A leaked `app` token already has
   full corpus access, so this adds no exposure; can be `admin` if isolation is
   preferred.
-- Grant keyed by `client_id`; a connector that re-registers (new DCR client_id)
-  appears as a NEW `pending` connection to re-confirm. With `approval_policy`
-  this is the intended vetting behavior, but note the UX; the stable
-  `redirect_host` is shown so the owner recognizes it.
+- Grant keyed by `client_id`. Re-registration no longer spawns a fresh
+  connection: `oauth.register()` dedupes by (`client_name`, `redirect_uris`) and
+  reuses the existing `client_id` (preferring one that already holds an active
+  grant), and `grants.dedupe_connections()` runs at startup to collapse duplicate
+  live grants by (`name`, `redirect_host`), excluding loopback hosts. So a
+  connector that re-registers lands back on the connection the owner already
+  approved instead of appearing as a new `pending` one; the stable
+  `redirect_host` is still shown so the owner recognizes it.
 
 ## Out of scope (future)
 

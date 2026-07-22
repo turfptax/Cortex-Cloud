@@ -41,7 +41,7 @@ It is small enough to understand end to end and cheap enough to leave running.
 | 🔒 **Single-owner by design** | Sign-in is locked to one Microsoft account. Others in your tenant cannot even get a session, and every API call is pinned to your identity. |
 | 💤 **Scale-to-zero economics** | The app sleeps when idle and wakes on the first request. Roughly $7 to $9 a month, most of it just the registry and storage. |
 | 🧠 **Semantic recall built in** | An embedding server ships in the same image, so search understands meaning, not just keywords. |
-| 🔌 **MCP for any AI** | Claude, ChatGPT, and Grok connect over OAuth 2.1 + PKCE, read-only and default-deny until you grant access. |
+| 🔌 **MCP for any AI** | Claude, ChatGPT, and Grok connect over OAuth 2.1 + PKCE, default-deny until you approve. An approved connection can read your corpus and log back into it. |
 | 📱 **Any device** | A responsive web Hub, served from the same container, works from your desktop or your phone. No install. |
 | 🗃️ **SQLite + Litestream** | The corpus is a plain SQLite file, continuously replicated to Blob storage and restored on cold start. No database server to run or pay for. |
 
@@ -116,7 +116,7 @@ Microsoft sign-in, and nothing else.
   token and storage key are Container App secrets. The image build refuses to stage any
   database or identity file, and this repo ships with none.
 - **Connectors are least-privilege.** AI assistants authorize over OAuth 2.1 with PKCE,
-  start with no access, and are read-only unless you opt in.
+  start with no access; approving a connection grants read and write together.
 
 ## What you get
 
@@ -139,8 +139,9 @@ brief to any AI that is not connected.
 The MCP surface exposes Memory (search, read, recent, ingest) and, as of the pillar
 release, Projects, Rules, and Skills as first-class tools: an AI you connect can list
 and read your projects, respect your standing tech rules, and browse your skills
-portfolio, with opt-in write tools that stay off until you enable them. People is kept
-owner-only by design, and planning (Simples) is next. See [docs/VISION.md](docs/VISION.md).
+portfolio. An approved connection can both read and write; the pillar write tools
+(cortex_project_upsert, cortex_rule_add, cortex_skill_log) sit alongside cortex_ingest.
+People is kept owner-only by design, and planning (Simples) is next. See [docs/VISION.md](docs/VISION.md).
 
 ## Repo layout
 

@@ -72,9 +72,16 @@ is an approve button gated behind an interactive Entra login, not a signup.
   (`oauth_consent`); Approve is a GET that redeems it and issues the code. This
   is the CSRF hardening (a forged/replayed approval can't succeed) and it works
   around Easy Auth 403ing the authenticated consent POST in a connector popup.
-- **Read-only by default.** OAuth connectors get `connector:read` only;
-  `connector:write` is granted only when `GATEWAY_OAUTH_ALLOW_WRITE` is set, so a
-  leaked/over-broad connector token can't ingest or poison the corpus.
+- **Minted scope is read-only by default; effective writes gated by grant.**
+  OAuth mints `connector:read` only; the `connector:write` scope string is added
+  only when `GATEWAY_OAUTH_ALLOW_WRITE` is set (this now matters mainly for
+  static CLI tokens). The minted scope no longer decides whether a connector can
+  write. Effective writes are gated by `grants.can_write()`, which allows a write
+  for the owner (`app`), for a token carrying `connector:write`, OR for any
+  connection the owner approved to `full`. So an approved connection can write
+  regardless of the ALLOW_WRITE flag; a leaked connector token writes only if its
+  connection was approved to `full`, and even then writes are additive, never
+  destructive. (`grants.can_write`, `oauth.py:_clean_scope`)
 - **Connections recorded in the corpus.** Every successful token issuance writes
   a `connector_connections` row (client, scope, tier, source IP, time) to the
   canonical store, a durable record independent of the Azure log stream.
