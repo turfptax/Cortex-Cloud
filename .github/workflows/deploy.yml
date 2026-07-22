@@ -6,6 +6,11 @@ name: Deploy
 on:
   push:
     branches: [master]
+    # Doc-only pushes do not change the running app, so skip the rebuild.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:

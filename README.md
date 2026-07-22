@@ -136,8 +136,11 @@ Three engines keep it alive: an **Overseer** that curates memory in the backgrou
 planner that turns goals into time blocks. A copy-context page at `/intro` hands a portable
 brief to any AI that is not connected.
 
-Today the MCP surface exposes Memory (search, read, recent, ingest); the pillars and
-planning are becoming first-class MCP tools next. See [docs/VISION.md](docs/VISION.md).
+The MCP surface exposes Memory (search, read, recent, ingest) and, as of the pillar
+release, Projects, Rules, and Skills as first-class tools: an AI you connect can list
+and read your projects, respect your standing tech rules, and browse your skills
+portfolio, with opt-in write tools that stay off until you enable them. People is kept
+owner-only by design, and planning (Simples) is next. See [docs/VISION.md](docs/VISION.md).
 
 ## Repo layout
 
