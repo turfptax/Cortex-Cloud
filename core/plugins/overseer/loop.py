@@ -593,6 +593,27 @@ class OverseerLoop:
                 summary["errors"].append(
                     "notif_classify: " + str(e)[:200])
 
+        # Step 2d (2026-07-22): classify new imported sessions by category
+        # (work / cortex / personal) so the temporal narratives can group
+        # them. Flash, ~$0.001/session; only touches unclassified rows, with
+        # a small per-tick cap, and respects the daily budget. Fills
+        # imported_sessions.category, which temporal_narrative reads.
+        if (self._cfg.get("loop_classify_categories", True)
+                and not budget.exhausted()):
+            try:
+                import category_classifier as _cat
+                cres = _cat.run_batch(
+                    db=self._db, llm=self._llm,
+                    limit=int(self._cfg.get(
+                        "loop_category_classify_per_tick", 25)),
+                    max_cost_usd=float(self._cfg.get(
+                        "loop_category_classify_max_cost", 0.05)))
+                budget.charge(cres)
+                summary["categories_classified"] = cres.get("classified", 0)
+            except Exception as e:
+                self._log.exception("category classify step failed: %s", e)
+                summary["errors"].append("category: " + str(e)[:200])
+
         # Step 3: working memory always rebuilds (no LLM call)
         if self._cfg.get("loop_build_working_memory", True):
             try:
