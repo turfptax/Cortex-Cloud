@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import logging
 
-from . import corpus_service, corpus_writes, db
+from . import corpus_service, corpus_writes, db, grants
 from .auth import Principal
 from .core_client import CoreWriteError
+
+# Shown to a connector whose connection is not approved for writing.
+_WRITE_DENIED = "write requires an approved connection"
 
 log = logging.getLogger("cortex_gateway.pillars")
 
@@ -220,8 +223,8 @@ def skill_get(principal: Principal, name: str) -> dict:
 # ── Writes (connector:write, off by default; route through the core) ──
 
 def project_upsert(principal: Principal, *, tag: str, fields: dict) -> dict:
-    if not principal.has("connector:write"):
-        return {"ok": False, "error": "token lacks connector:write scope"}
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
     tag = (tag or "").strip()
     if not tag:
         return {"ok": False, "error": "tag is required"}
@@ -234,8 +237,8 @@ def project_upsert(principal: Principal, *, tag: str, fields: dict) -> dict:
 
 def rule_add(principal: Principal, *, title: str, rule: str,
              stack: str = "", situation: str = "") -> dict:
-    if not principal.has("connector:write"):
-        return {"ok": False, "error": "token lacks connector:write scope"}
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
     title, rule = (title or "").strip(), (rule or "").strip()
     if not title or not rule:
         return {"ok": False, "error": "title and rule are required"}
@@ -254,8 +257,8 @@ def rule_add(principal: Principal, *, title: str, rule: str,
 
 def skill_log(principal: Principal, *, skill: str, content: str,
               kind: str = "note", proficiency: str = "") -> dict:
-    if not principal.has("connector:write"):
-        return {"ok": False, "error": "token lacks connector:write scope"}
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
     skill, content = (skill or "").strip(), (content or "").strip()
     if not skill or not content:
         return {"ok": False, "error": "skill and content are required"}

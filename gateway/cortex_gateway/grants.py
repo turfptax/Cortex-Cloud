@@ -57,6 +57,18 @@ def has_full_access(principal: Principal) -> bool:
     return bool(g and g["status"] == "active" and g["level"] == "full")
 
 
+def can_write(principal: Principal) -> bool:
+    """Write authorization. The owner (app/phone) always writes. A connector
+    may write iff its connection is approved, the SAME grant that gates reads,
+    or it carries an explicit connector:write scope (static tokens minted by
+    the CLI). Tory 2026-07-22: an approved connection is read AND write;
+    logging into Cortex is a first-class use, not a separate privilege, so
+    approval alone is enough. Writes are additive, never destructive."""
+    if principal.has("app") or principal.has("connector:write"):
+        return True
+    return principal.is_connector and has_full_access(principal)
+
+
 def _update(client_id: str, updates: dict) -> None:
     sets = ", ".join(f"{k} = :{k}" for k in updates)
     db.execute(f"UPDATE connector_grants SET {sets} WHERE client_id = :_cid",
