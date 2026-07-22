@@ -174,6 +174,25 @@ def test_register_enforces_allowlist(gw, monkeypatch):
     _config.get_settings.cache_clear()
 
 
+def test_register_dedups_same_identity(gw, monkeypatch):
+    # A connector re-registering with the same name + redirects reuses its
+    # client_id, so one service is one connection instead of a new row per
+    # connect. A different service still gets a distinct client_id.
+    monkeypatch.delenv("GATEWAY_OAUTH_ALLOWED_REDIRECTS", raising=False)
+    _config, _db, _oauth = gw
+    _config.get_settings.cache_clear()
+    from starlette.testclient import TestClient
+    with TestClient(_oauth_app()) as client:
+        body = {"client_name": "Claude", "redirect_uris": [_CLAUDE]}
+        first = client.post("/oauth/register", json=body).json()["client_id"]
+        second = client.post("/oauth/register", json=body).json()["client_id"]
+        assert first == second
+        other = client.post("/oauth/register", json={
+            "client_name": "ChatGPT", "redirect_uris": [_CHATGPT]}).json()["client_id"]
+        assert other != first
+    _config.get_settings.cache_clear()
+
+
 def test_authorize_blocks_grandfathered_client_after_lockdown(gw, monkeypatch):
     # A client registered while the allowlist was empty must not be usable with
     # its non-listed redirect once the allowlist is set (defense-in-depth).

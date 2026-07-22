@@ -94,10 +94,15 @@ def upsert_on_connect(client_id: str, name: str, redirect_host: str = "") -> Non
     g = grant_for(client_id)
     if g is None:
         seed = bool(host) and host in get_settings().connector_full_hosts
+        # Durable by default (Tory 2026-07-22): once the owner approves a
+        # connection it stays approved across reconnects, so an AI does not
+        # re-prompt every time it uses the connector. Still default-DENY: a new
+        # connection starts pending until approved. A connection can be set to
+        # the stricter 'ask' policy (re-confirm each connect) via set_policy.
         db.insert("connector_grants", {
             "client_id": client_id, "name": name or client_id, "redirect_host": host,
             "level": "full" if seed else "none",
-            "approval_policy": "always" if seed else "ask",
+            "approval_policy": "always",
             "status": "active" if seed else "pending",
             "first_connected_at": now, "last_connected_at": now,
             "granted_at": now if seed else None,
@@ -128,6 +133,53 @@ def migrate() -> None:
                     host = h
                     break
             upsert_on_connect(c["client_id"], c.get("client_name") or "", host)
+    dedupe_connections()
+
+
+def dedupe_connections() -> int:
+    """Collapse duplicate connections into one per service. A connector that
+    re-registered spawned a new client_id + grant each time, so the owner saw
+    the same service many times and had to re-approve. Group the live grants by
+    (name, redirect_host); in each group keep ONE primary (an approved one if
+    present, else the most recently connected) and revoke the rest so they drop
+    off the owner's connection list. Idempotent; safe to run every startup.
+    Returns the number of grants revoked."""
+    if not db.has_table("connector_grants"):
+        return 0
+    rows = db.fetchall(
+        "SELECT client_id, name, redirect_host, status, last_connected_at "
+        "FROM connector_grants WHERE status != 'revoked'")
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        name = (r.get("name") or "").strip().lower()
+        host = (r.get("redirect_host") or "").strip().lower()
+        if not name and not host:
+            continue                      # nothing to group on; leave it alone
+        # Loopback native-app clients (Claude Code, RFC 8252) use ephemeral
+        # ports, so distinct sessions share host 127.0.0.1/localhost but are
+        # genuinely separate registrations (registration dedup keys on the full
+        # redirect incl. port). Never collapse them here, or a startup could
+        # revoke the token of a session that is actively in use.
+        if host in ("127.0.0.1", "localhost", "::1", "[::1]"):
+            continue
+        groups.setdefault((name, host), []).append(r)
+    revoked = 0
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        # primary: an active grant wins; then the most recently connected.
+        grp.sort(key=lambda r: (r["status"] == "active",
+                                str(r.get("last_connected_at") or "")),
+                 reverse=True)
+        for r in grp[1:]:
+            _update(r["client_id"],
+                    {"status": "revoked", "level": "none", "updated_at": _now()})
+            db.execute_write(
+                "UPDATE gateway_tokens SET revoked_at = CURRENT_TIMESTAMP "
+                "WHERE client_id = :c AND revoked_at IS NULL",
+                {"c": r["client_id"]})
+            revoked += 1
+    return revoked
 
 
 # ── management (backing the /v1/connections endpoints) ────────────────
