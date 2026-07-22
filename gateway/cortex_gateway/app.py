@@ -332,6 +332,22 @@ def create_app() -> FastAPI:
     # MCP surface (connectors), mounted with its own bearer middleware.
     mcp_app = mcp_server.mcp.streamable_http_app()
     mcp_app.add_middleware(MCPBearerMiddleware, public_url=settings.public_url)
+
+    # Connectors are handed the resource URL "/mcp" (no trailing slash, per
+    # the protected-resource discovery doc), but the mounted MCP app lives at
+    # "/mcp/". A bare "/mcp" does not match the mount's inner routes and, in
+    # web-UI mode, falls through to the SPA static mount below and 404s (which
+    # a connector reports as "no MCP server found at the URL"). Redirect it to
+    # the canonical "/mcp/" using the public https URL so ACA's TLS
+    # termination cannot downgrade the redirect to http. 307 preserves the
+    # method and body (MCP posts JSON-RPC). Registered before the mount so it
+    # wins the bare-path match; "/mcp/" still falls straight to the mount.
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE", "OPTIONS"],
+                   include_in_schema=False)
+    async def _mcp_slash_redirect(request: Request):
+        base = settings.public_url or str(request.base_url).rstrip("/")
+        return RedirectResponse(f"{base}/mcp/", status_code=307)
+
     app.mount("/mcp", mcp_app)
 
     # Web-UI mode: serve the built Hub SPA at /. Mounted LAST so every

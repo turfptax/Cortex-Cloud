@@ -529,3 +529,45 @@ def test_facade_absent_without_static_dir(tmp_path, monkeypatch):
     assert "/intro" not in paths
     assert not any(getattr(r, "name", "") == "hub" for r in app.routes)
     config.get_settings.cache_clear()
+
+
+# -- /mcp no-slash redirect (regression: SPA static mount swallowed it) ----
+
+def test_mcp_no_slash_redirects_to_slash(tmp_path, monkeypatch):
+    """A bare /mcp must 307 to the absolute https /mcp/ instead of falling
+    through the SPA static mount and 404ing. Replicates create_app's mount
+    ordering without the real MCP session manager."""
+    monkeypatch.setenv("GATEWAY_PUBLIC_URL", "https://cortex.example.com")
+    from cortex_gateway import config
+    config.get_settings.cache_clear()
+    from cortex_gateway.config import get_settings
+
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from starlette.responses import RedirectResponse, PlainTextResponse
+    from starlette.staticfiles import StaticFiles
+    from starlette.routing import Mount, Route
+
+    static = tmp_path / "spa"; static.mkdir()
+    (static / "index.html").write_text("spa", encoding="utf-8")
+
+    app = FastAPI()
+
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE", "OPTIONS"])
+    async def _redir(request: Request):
+        base = get_settings().public_url or str(request.base_url).rstrip("/")
+        return RedirectResponse(f"{base}/mcp/", status_code=307)
+
+    # stub MCP mount that answers at /mcp/
+    async def _mcp_root(request):
+        return PlainTextResponse("mcp-app")
+    app.router.routes.append(Mount("/mcp", routes=[Route("/", _mcp_root)]))
+    app.mount("/", StaticFiles(directory=str(static), html=True), name="hub")
+
+    client = TestClient(app, follow_redirects=False)
+    r = client.post("/mcp", content=b"{}")
+    assert r.status_code == 307
+    assert r.headers["location"] == "https://cortex.example.com/mcp/"
+    # the slash form still reaches the mount, not the redirect
+    assert client.get("/mcp/").text == "mcp-app"
+    config.get_settings.cache_clear()

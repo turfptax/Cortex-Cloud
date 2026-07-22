@@ -1,0 +1,15 @@
+.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.devdata
+web/node_modules
+web/dist
+core/data
+core/imports
+core/memory
+*.db
+*.db-*
+*.jsonl
+*.log
+.env
