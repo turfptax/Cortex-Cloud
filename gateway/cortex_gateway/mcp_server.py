@@ -63,12 +63,16 @@ def _principal() -> Principal:
 
 # streamable_http_path="/" because we mount the app under "/mcp" in FastAPI;
 # the default "/mcp" would double-prefix to /mcp/mcp.
+# The owner's display name is interpolated from config (CORTEX_OWNER_NAME) so
+# the public repo names no specific person and a friend's deployment shows
+# their own name. Default "the owner" keeps an unconfigured install generic.
+_OWNER = get_settings().owner_name
 mcp = FastMCP(
     "cortex",
     instructions=(
-        "Cortex is Tory Moghadam's personal AI memory corpus: an evolving store "
-        "of his notes, project context, journal, open questions, patterns, and "
-        "AI-synthesized summaries. Use it to ground answers in what Tory has "
+        f"Cortex is {_OWNER}'s personal AI memory corpus: an evolving store "
+        "of their notes, project context, journal, open questions, patterns, and "
+        f"AI-synthesized summaries. Use it to ground answers in what {_OWNER} has "
         "actually said, done, and is working on rather than guessing.\n\n"
         "Tool guide:\n"
         "- search(query): ranked hits, each with an `id` token (e.g. g:123). "
@@ -83,11 +87,11 @@ mcp = FastMCP(
         "- cortex_ingest(content): add an observation back into Cortex (write; "
         "needs a write-enabled token, which is off by default).\n\n"
         "Pillars (structured, first-class):\n"
-        "- cortex_projects_list / cortex_project_get: what Tory is working on, "
+        f"- cortex_projects_list / cortex_project_get: what {_OWNER} is working on, "
         "with the Overseer's rollup stats.\n"
-        "- cortex_rules_list: Tory's standing tech rules (hard-won engineering "
-        "defaults). Read these before advising on his stack.\n"
-        "- cortex_skills_list / cortex_skill_get: his tech-skills portfolio.\n"
+        f"- cortex_rules_list: {_OWNER}'s standing tech rules (hard-won engineering "
+        "defaults). Read these before advising on their stack.\n"
+        "- cortex_skills_list / cortex_skill_get: their tech-skills portfolio.\n"
         "- writes (cortex_project_upsert / cortex_rule_add / cortex_skill_log, "
         "plus cortex_ingest) work for any approved connection: logging is a "
         "first-class use, so read and write come together.\n\n"
@@ -110,7 +114,7 @@ mcp = FastMCP(
                                       readOnlyHint=True, idempotentHint=True,
                                       openWorldHint=False))
 def search(query: str) -> dict[str, Any]:
-    """Search Tory's Cortex memory corpus. Returns a list of result objects,
+    """Search the Cortex memory corpus. Returns a list of result objects,
     each with an `id` (a Cortex token) you can pass to `fetch` for the full
     content. Covers gists, themes, journal entries, open questions, patterns,
     drift observations, episodes, narratives."""
@@ -163,7 +167,7 @@ def fetch(id: str) -> dict[str, Any]:
                                       openWorldHint=False))
 def cortex_search(query: str, kinds: str = "", days: int = 0,
                   limit: int = 40) -> dict[str, Any]:
-    """Layered search over Tory's corpus. Returns three layers - abstractions
+    """Layered search over the Cortex corpus. Returns three layers - abstractions
     (themes/patterns/questions), gists (per-session summaries), and raw_refs
     (pointers to source conversations). `kinds` is an optional CSV filter
     (gist,theme,pattern,drift,question,journal,narrative,episode,blindspot).
@@ -187,7 +191,7 @@ def cortex_read(token: str) -> dict[str, Any]:
           annotations=ToolAnnotations(title="Recent Cortex activity",
                                       readOnlyHint=True, openWorldHint=False))
 def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
-    """What changed in Tory's corpus over the last N days - recent gists,
+    """What changed in the corpus over the last N days - recent gists,
     journal entries, narratives, questions, patterns. Good for bootstrapping
     context at the start of a conversation."""
     return corpus_service.recent(_principal(), days=days, limit=limit)
@@ -219,7 +223,7 @@ def cortex_ingest(content: str, kind: str = "note", tags: str = "",
                                       readOnlyHint=True, idempotentHint=True,
                                       openWorldHint=False))
 def cortex_projects_list(status: str = "", limit: int = 40) -> dict[str, Any]:
-    """List Tory's projects (tag, name, status, priority, category, hours,
+    """List the owner's projects (tag, name, status, priority, category, hours,
     last touched). Optional `status` filter (e.g. 'active'). Read-only."""
     return pillars_service.projects_list(_principal(), status=status,
                                          limit=limit)
@@ -241,9 +245,9 @@ def cortex_project_get(tag: str) -> dict[str, Any]:
                                       openWorldHint=False))
 def cortex_rules_list(status: str = "active", stack: str = "",
                       limit: int = 40) -> dict[str, Any]:
-    """List Tory's standing tech rules (hard-won engineering defaults: title,
+    """List the owner's standing tech rules (hard-won engineering defaults: title,
     rule, stack, situation, status). Optional `stack` substring filter and
-    `status` (default 'active'). Read these before advising on his stack.
+    `status` (default 'active'). Read these before advising on their stack.
     Read-only."""
     return pillars_service.rules_list(_principal(), status=status,
                                       stack=stack, limit=limit)
@@ -254,7 +258,7 @@ def cortex_rules_list(status: str = "active", stack: str = "",
                                       readOnlyHint=True, idempotentHint=True,
                                       openWorldHint=False))
 def cortex_skills_list(limit: int = 40) -> dict[str, Any]:
-    """List Tory's tech-skills portfolio index (name, proficiency, summary,
+    """List the owner's tech-skills portfolio index (name, proficiency, summary,
     tools). Read-only."""
     return pillars_service.skills_list(_principal(), limit=limit)
 
@@ -304,8 +308,8 @@ def cortex_project_upsert(tag: str, name: str = "", status: str = "",
                                       idempotentHint=False, openWorldHint=False))
 def cortex_rule_add(title: str, rule: str, stack: str = "",
                     situation: str = "") -> dict[str, Any]:
-    """Add (or update by title) a standing tech rule in Tory's living rule log
-    that every connecting AI reads. `rule` is the imperative one-liner.
+    """Add (or update by title) a standing tech rule in the owner's living rule
+    log that every connecting AI reads. `rule` is the imperative one-liner.
     Works for any approved connection."""
     return pillars_service.rule_add(_principal(), title=title, rule=rule,
                                     stack=stack, situation=situation)

@@ -13,12 +13,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 
 log = logging.getLogger("plugin.weather.nws_alerts")
 
 # NWS asks for a contact in the UA string (their docs); identifies Cortex.
-_UA = "cortex-weather (torylogos@gmail.com)"
+# Prefer the owner's email (CORTEX_OWNER_EMAIL); fall back to the project
+# repo so the public default carries no personal address.
+_owner_email = os.environ.get("CORTEX_OWNER_EMAIL", "").strip()
+_UA = (f"cortex-weather ({_owner_email})" if _owner_email
+       else "cortex-weather (https://github.com/turfptax/cortex-core)")
 # weather_alerts.severity is an enum: minor | moderate | severe | extreme.
 _SEVERITIES = ("minor", "moderate", "severe", "extreme")
 

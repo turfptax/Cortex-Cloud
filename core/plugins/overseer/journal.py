@@ -78,14 +78,14 @@ moment to act on things you'd otherwise note as "I noticed X but can't \
 do anything about it." Use tools when the action is obvious and small:
 
   - `get_pending_notification_responses` + `mark_notification_responses_processed`
-    when freshness shows responses are waiting from Tory's clicks. Read \
-    his reply, decide what to do, mark processed.
-  - `redact_imported_session` when his reply tells you to scrub one.
+    when freshness shows responses are waiting from the owner's clicks. Read \
+    their reply, decide what to do, mark processed.
+  - `redact_imported_session` when their reply tells you to scrub one.
   - `file_evidence` when you notice a session/note/gist that supports \
     or complicates an open question.
   - `propose_project_merge` if you've been carrying a duplicate-projects \
     observation across multiple ticks.
-  - `emit_notification` for things Tory genuinely needs to see (be \
+  - `emit_notification` for things the owner genuinely needs to see (be \
     sparing - the Bell tab noise floor is real).
   - Read tools (`get_recent_*`, `search_*`) are free to use when you \
     actually need the data to write the entry.
@@ -100,7 +100,7 @@ Category B audit tools (Slice 10, 2026-05-20):
     `propose_project_merge`. Pulls project_summaries, projects rows, \
     recent session excerpts for both tags and returns SAME / \
     SUBPROJECT_OF_A / SUBPROJECT_OF_B / DISTINCT / INSUFFICIENT_DATA. \
-    Reduces false positives that land on Tory's Insights queue.
+    Reduces false positives that land on the owner's Insights queue.
   - Every B output starts with a `[B:<name>]` marker. That marker \
     survives consolidation as authorship attribution - when you cite \
     a B verdict in a journal entry, KEEP THE MARKER INTACT. \
@@ -114,9 +114,9 @@ Category B audit tools (Slice 10, 2026-05-20):
 C-agent graduation (Slice 10 CP5):
   - When a B has accumulated ≥10 dispatches and ≥7 rated 4+ in a \
     rolling 7-day window, the loop emits a c-graduation notification \
-    to Tory with [Promote to C / Keep as B / Explain] actions. If \
+    to the owner with [Promote to C / Keep as B / Explain] actions. If \
     you see a notification response of kind='promote_b_to_c' from \
-    Tory, call `accept_c_promotion` with the b_agent_name + the \
+    the owner, call `accept_c_promotion` with the b_agent_name + the \
     proposed_c_name from the payload. C agents run on a schedule \
     (24h default) and inherit the B parent's frozen system prompt.
 
@@ -124,7 +124,7 @@ Hard discipline:
   - Max {max_tool_iter} tool iterations this tick. After that, write \
     the entry with what you have.
   - DON'T call `dispatch_sibling` from the journal step - that's a \
-    chat-only escalation (the sibling spends real money on Tory's \
+    chat-only escalation (the sibling spends real money on the owner's \
     Anthropic budget; that's a deliberate-chat moment, not a \
     background-tick moment).
   - DON'T call `compress_chat` from the journal step - chat-only.
@@ -337,7 +337,7 @@ def _format_wm_snippet(wm: dict | None, max_chars: int = 1200) -> str:
     if pending_resp:
         parts.append(
             f"** ACTION READY: {pending_resp} unread notification "
-            f"response(s) from Tory. Call "
+            f"response(s) from the owner. Call "
             f"`get_pending_notification_responses` to read them, "
             f"then act + `mark_notification_responses_processed`."
         )

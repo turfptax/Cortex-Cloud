@@ -30,6 +30,11 @@ APP="cortex-cloud"
 TENANT_TZ="${CORTEX_TENANT_TZ:-America/Chicago}"
 GROQ_API_KEY="${GROQ_API_KEY:-}"
 ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY:-}"
+# Owner identity: set CORTEX_OWNER_NAME / CORTEX_OWNER_EMAIL in your deploy
+# env to personalize the instance. Empty = generic "the owner" (repo ships
+# no personal name). Kept OUT of the committed template on purpose.
+OWNER_NAME="${CORTEX_OWNER_NAME:-}"
+OWNER_EMAIL="${CORTEX_OWNER_EMAIL:-}"
 
 echo "== [1/9] resource group =="
 az group create -n "$RESOURCE_GROUP" -l "$LOCATION" -o none
@@ -75,7 +80,8 @@ ENV_ID=$(az containerapp env show -g "$RESOURCE_GROUP" -n "$ENV_NAME" --query id
 echo "== [8/9] deploy the container app =="
 SERVICE_TOKEN="$(openssl rand -hex 24)"
 export LOCATION ENV_ID ACR ACR_PWD KV STORAGE_ACCOUNT STORAGE_KEY SERVICE_TOKEN \
-       IMAGE TENANT_TZ OWNER_OID GROQ_API_KEY ELEVENLABS_API_KEY
+       IMAGE TENANT_TZ OWNER_OID GROQ_API_KEY ELEVENLABS_API_KEY \
+       OWNER_NAME OWNER_EMAIL
 # PUBLIC_URL: use the custom domain if set, else fill after first deploy.
 export PUBLIC_URL="${CUSTOM_DOMAIN:+https://$CUSTOM_DOMAIN}"
 export PUBLIC_URL="${PUBLIC_URL:-https://placeholder.local}"

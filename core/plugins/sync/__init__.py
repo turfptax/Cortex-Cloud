@@ -100,7 +100,7 @@ PUSH_KINDS = {
     # Person-notes dictated on the phone (2026-06-13): a voice note scoped
     # to a synced contact. Lands in overseer.db person_notes. The phone
     # sends person_id (the SERVER id it received from the overseer_people
-    # pull) + body; provenance defaults to tory-voice + created_by_agent
+    # pull) + body; provenance defaults to owner-voice + created_by_agent
     # to mobile (see _http_push). note_kind / modality optional (DB
     # defaults apply). local_created_at: phone is authority on its own tz.
     "person_notes": ("overseer", ["person_id", "body", "note_kind",
@@ -254,9 +254,9 @@ class SyncPlugin(Plugin):
                 if kind in ("notes", "time_entries"):
                     values.setdefault("source", "mobile")
                 if kind == "person_notes":
-                    # Phone-authored = spoken by Tory unless the row says
-                    # otherwise (his consent ruling). Stamp authorship too.
-                    values.setdefault("provenance", "tory-voice")
+                    # Phone-authored = spoken by the owner unless the row
+                    # says otherwise (their consent ruling). Stamp authorship.
+                    values.setdefault("provenance", "owner-voice")
                     values.setdefault("created_by_agent", "mobile")
                 if not values:
                     rejected.append({"id": uid, "reason": "no insertable columns"})
