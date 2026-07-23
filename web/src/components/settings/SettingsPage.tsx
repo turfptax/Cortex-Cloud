@@ -9,6 +9,7 @@ import { UpdateCard } from './UpdateCard'
 import { DebugLogsCard } from './DebugLogsCard'
 import { PluginsTab } from './PluginsTab'
 import { CloudSettingsCard } from './CloudSettingsCard'
+import { ConnectionsCard } from './ConnectionsCard'
 
 export function SettingsPage() {
   const { cloud } = useCloudMode()
@@ -99,6 +100,7 @@ export function SettingsPage() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {cloud && <CloudSettingsCard />}
+        {cloud && <ConnectionsCard />}
         {/* First-run banner */}
         {!cloud && Boolean(config.first_run) && (
           <div className="bg-accent/10 border border-accent/30 rounded-xl p-5">
