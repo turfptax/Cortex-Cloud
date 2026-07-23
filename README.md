@@ -53,8 +53,9 @@ You need an Azure subscription, a Microsoft account, and an
 ```bash
 git clone https://github.com/turfptax/Cortex-Cloud.git
 cd Cortex-Cloud
-cp .env.example .env      # add your subscription, a unique suffix, your OWNER_OID, your key
+cp .env.example .env      # add your subscription, a unique suffix, your OWNER_OID, your name, your key
 #                           OWNER_OID:  az ad signed-in-user show --query id -o tsv
+#                           CORTEX_OWNER_NAME: how connecting AIs refer to you (blank = "the owner")
 
 bash deploy/deploy.sh     # provisions everything, prints your URL
 bash deploy/tick-job.sh   # schedules the memory loop
