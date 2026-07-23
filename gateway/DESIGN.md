@@ -9,8 +9,8 @@
 > ## ⚠️ Amendment 2026-05-28 - deployment target is Microsoft Azure
 >
 > The hosting decision below (Cloudflare Tunnel → Raspberry Pi 5, single
-> canonical SQLite) is **superseded**. The Gateway deploys to **Azure in Tory's
-> own tenant**:
+> canonical SQLite) is **superseded**. The Gateway deploys to **Azure in the
+> owner's own tenant**:
 > - **Hosting:** Azure Container Apps (recommended) or App Service.
 > - **Database:** Azure Database for **PostgreSQL Flexible Server** (recommended
 > - `pg_trgm` + `pgvector`) or Azure SQL. The SQLite data layer must be ported
@@ -91,7 +91,7 @@ stays in one place.
 
 ## 4. Auth model
 
-Single-user system (Tory's accounts), but internet-facing → must be real.
+Single-user system (the owner's accounts), but internet-facing → must be real.
 
 **Phase 1 - bearer tokens (ship first):**
 - One opaque token per client, stored hashed in a new `gateway_tokens` table

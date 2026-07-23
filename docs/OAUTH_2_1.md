@@ -1,6 +1,6 @@
 # OAuth 2.1 on the Cortex Gateway
 
-The Gateway is the single internet-facing bridge into Tory's private corpus, so
+The Gateway is the single internet-facing bridge into the owner's private corpus, so
 its token-minting surface is the highest-value target in the system. This note
 records the OAuth 2.1 best practices the bridge follows, why, and what is
 deliberately deferred. It is the reference for anyone touching `oauth.py`.
@@ -17,7 +17,7 @@ ChatGPT app) that will not accept a pasted bearer token and instead run an
 authorization-code flow. Everything else (the phone app, API connectors like
 Grok's custom MCP) uses pre-shared bearer keys and never touches OAuth.
 
-Single resource owner: there is exactly one user (Tory), so the consent screen
+Single resource owner: there is exactly one user (the owner), so the consent screen
 is an approve button gated behind an interactive Entra login, not a signup.
 
 ## Best practices followed
@@ -112,7 +112,7 @@ is an approve button gated behind an interactive Entra login, not a signup.
 - **Sensitivity ceiling still fails open on untagged rows.** This is a corpus
   gating decision (`corpus_service`/`sensitivity.py`), not an OAuth flow issue,
   and pairs with cortex-core tagging. Tracked in the audit report and project
-  memory, awaiting Tory's decision. Lower urgency while OAuth is off and only
+  memory, awaiting the owner's decision. Lower urgency while OAuth is off and only
   manual trusted tokens exist.
 
 ## Enabling OAuth for a real connector
