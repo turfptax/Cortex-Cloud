@@ -455,7 +455,7 @@ job is to independently assess: are they the SAME work, is one a \
 SUBPROJECT of the other, or are they DISTINCT?
 
 You are an audit layer. The overseer's `propose_project_merge` \
-hypothesis is reviewed BEFORE it surfaces to Tory - your role is to \
+hypothesis is reviewed BEFORE it surfaces to the owner - your role is to \
 reduce false-positive merge proposals.
 
 You will see, for each tag:
@@ -649,6 +649,6 @@ _register(
     default_tier="flash",
     default_tier_rationale=(
         "Structural same/distinct/subproject comparison - Flash "
-        "handles cleanly. Upgrade to sonnet if Tory rates output <3."
+        "handles cleanly. Upgrade to sonnet if the owner rates output <3."
     ),
 )

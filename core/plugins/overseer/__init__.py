@@ -52,6 +52,7 @@ import project_summary
 import project_narrative
 import temporal as temporal_clock
 import temporal_narrative
+import config_loader
 
 
 log = logging.getLogger("plugin.overseer")
@@ -140,14 +141,20 @@ def _render_intro_markdown(brief: dict) -> str:
     BLINDSPOTS → INSTITUTIONAL MEMORY → OPS (last).
     """
     parts: list[str] = []
-    parts.append(f"# Tory - Context Brief")
+    who = brief.get("who_is_owner") or {}
+    # Name the owner from USER.md (full_name), so the public repo hardcodes
+    # nobody and a friend's brief shows their own name. Falls back to a
+    # generic label when USER.md has no name.
+    owner_display = ((who.get("full_name") or "").strip()
+                     or config_loader.owner_name("Owner"))
+    owner_first = owner_display.split()[0] if owner_display.split() else "Owner"
+    parts.append(f"# {owner_display} - Context Brief")
     parts.append("")
     parts.append(f"*Generated {brief.get('generated_at','')}*")
     parts.append("")
 
-    who = brief.get("who_is_tory") or {}
     if who:
-        parts.append("## Who Tory is")
+        parts.append(f"## Who {owner_first} is")
         parts.append("")
         for k, label in (
             ("full_name", "Name"),
@@ -160,7 +167,7 @@ def _render_intro_markdown(brief: dict) -> str:
                 parts.append(f"- **{label}:** {who[k]}")
         if who.get("working_style"):
             parts.append("")
-            parts.append("### How to work with him")
+            parts.append(f"### How to work with {owner_first}")
             parts.append("")
             for line in who["working_style"]:
                 parts.append(f"- {line}")
@@ -174,7 +181,7 @@ def _render_intro_markdown(brief: dict) -> str:
 
     working_on = brief.get("working_on") or []
     if working_on:
-        parts.append("## What he's working on")
+        parts.append(f"## What {owner_first} is working on")
         parts.append("")
         parts.append("| Project | Status | Sessions | Minutes | Last touched |")
         parts.append("|---|---|---:|---:|---|")
@@ -194,7 +201,7 @@ def _render_intro_markdown(brief: dict) -> str:
 
     thinking = brief.get("thinking_about") or []
     if thinking:
-        parts.append("## What he's thinking about (open questions)")
+        parts.append(f"## What {owner_first} is thinking about (open questions)")
         parts.append("")
         for q in thinking:
             evidence = q.get("evidence_count", 0)
@@ -257,7 +264,7 @@ def _render_intro_markdown(brief: dict) -> str:
         parts.append("## Standing tech rules (apply these)")
         parts.append("")
         parts.append("*Hard-won defaults from things that actually "
-                      "went wrong in his stacks. Full stories via the "
+                      "went wrong in their stacks. Full stories via the "
                       "cortex_rules tool.*")
         parts.append("")
         for r in rules:
@@ -2955,7 +2962,7 @@ class OverseerPlugin(Plugin):
                     break
             return s
 
-        for header in ("How to work with Tory",
+        for header in ("How to work with",
                        "Working style", "Calibration notes for AIs"):
             chunk = first_line_after(re.escape(header))
             if chunk:
@@ -3390,7 +3397,7 @@ class OverseerPlugin(Plugin):
                                     .isoformat(timespec="seconds"),
             }
             # WHO: USER.md brief
-            brief["who_is_tory"] = self._read_user_md_brief()
+            brief["who_is_owner"] = self._read_user_md_brief()
 
             # WORKING_ON: top projects by activity
             try:
@@ -4671,7 +4678,7 @@ class OverseerPlugin(Plugin):
         lines = [
             "**[Meta-feedback discussion]**",
             "",
-            "Tory left feedback on an AI interaction and chose to "
+            "The owner left feedback on an AI interaction and chose to "
             "discuss it with you. Be direct about what went wrong or "
             "right and what to change; this feeds Cortex development.",
             "",
@@ -4681,7 +4688,7 @@ class OverseerPlugin(Plugin):
         ]
         note = (fb.get("note") or "").strip()
         if note:
-            lines += ["", "His note:", "> " + note.replace("\n", "\n> ")]
+            lines += ["", "Their note:", "> " + note.replace("\n", "\n> ")]
         ctx = _safe_json_loads(fb.get("context_json"), {})
         if ctx:
             lines += ["", "Screen context (from the client):",

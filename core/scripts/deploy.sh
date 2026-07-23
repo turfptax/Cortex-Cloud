@@ -11,9 +11,10 @@
 
 set -e
 
-PI_USER="turfptax"
-PI_HOST="10.0.0.25"
-PI_TARGET="/home/${PI_USER}/cortex-core"
+# Override for your own Pi via env: PI_USER / PI_HOST / PI_TARGET.
+PI_USER="${PI_USER:-turfptax}"
+PI_HOST="${PI_HOST:-10.0.0.25}"
+PI_TARGET="${PI_TARGET:-/home/${PI_USER}/cortex-core}"
 PI="${PI_USER}@${PI_HOST}"
 
 # Resolve script location so it works from any directory

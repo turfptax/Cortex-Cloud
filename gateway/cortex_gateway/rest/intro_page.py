@@ -16,6 +16,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from ..config import get_settings
+
 
 router = APIRouter()
 
@@ -154,7 +156,7 @@ _PAGE_HTML = r"""<!doctype html>
   <div class="wrap">
     <h1>Cortex Context - for AI paste</h1>
     <p class="sub">
-      The 30-second brief about Tory. Hit
+      The 30-second brief about __OWNER_NAME__. Hit
       <strong>Copy</strong>, then paste into any AI chat that
       doesn't have the Cortex MCP loaded (Grok, ChatGPT browser, a
       phone, etc.).
@@ -285,5 +287,6 @@ _PAGE_HTML = r"""<!doctype html>
 
 @router.get("/intro", response_class=HTMLResponse)
 async def intro_page():
-    """The standalone copy-context page Tory pastes into non-MCP AIs."""
-    return HTMLResponse(content=_PAGE_HTML)
+    """The standalone copy-context page the owner pastes into non-MCP AIs."""
+    html = _PAGE_HTML.replace("__OWNER_NAME__", get_settings().owner_name)
+    return HTMLResponse(content=html)

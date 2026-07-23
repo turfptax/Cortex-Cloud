@@ -111,6 +111,16 @@ class Settings:
         self.owner_oids = frozenset(
             o.lower() for o in raw_owner.replace(",", " ").split() if o)
 
+        # Owner DISPLAY name (de-personalization, 2026-07-23). Names the person
+        # whose corpus this is in the MCP server `instructions` block and the
+        # /intro brief. The public repo ships generic; a deployment sets
+        # CORTEX_OWNER_NAME so a friend's own instance never says "Tory". The
+        # core reads the same env (config_loader.owner_name); both containers of
+        # the one image inherit it. Default keeps an unconfigured install owner-
+        # agnostic rather than naming a specific person.
+        self.owner_name = (
+            os.environ.get("CORTEX_OWNER_NAME", "").strip() or "the owner")
+
         # Cloud voice (Phase A3). Keys come from Key Vault secret refs.
         # Empty = that backend is unavailable and the SPA falls back to
         # the browser's on-device speech (TTS) or hides the mic (STT).

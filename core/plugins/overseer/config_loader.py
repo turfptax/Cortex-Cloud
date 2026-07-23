@@ -101,5 +101,25 @@ def category_rules() -> list:
     return load().get("category", []) or []
 
 
-def owner_name(default: str = "the user") -> str:
-    return (instance().get("owner_name") or "").strip() or default
+def owner_name(default: str = "the owner") -> str:
+    """Display name of this instance's owner, for prompts + the /intro brief.
+
+    Precedence: the gitignored local TOML ([instance].owner_name, wins for
+    local dev) -> the CORTEX_OWNER_NAME env (how the cloud/friend deploy sets
+    it, since the local TOML never ships) -> a generic default. The public
+    repo hardcodes no personal name; an unconfigured install stays owner-
+    agnostic instead of naming a specific person.
+    """
+    return (instance().get("owner_name")
+            or os.environ.get("CORTEX_OWNER_NAME") or "").strip() or default
+
+
+def owner_email(default: str = "") -> str:
+    """Contact email for this instance's owner. Same precedence as owner_name.
+
+    Fed into outbound User-Agent contacts (e.g. the NWS weather fetch, which
+    asks callers for a contact). Empty by default so an unconfigured install
+    sends no personal address; callers omit the contact when this is blank.
+    """
+    return (instance().get("owner_email")
+            or os.environ.get("CORTEX_OWNER_EMAIL") or "").strip() or default

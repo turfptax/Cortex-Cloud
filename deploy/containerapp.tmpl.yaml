@@ -83,6 +83,10 @@ properties:
             secretRef: openrouter
           - name: CORTEX_EMBED_URL
             value: http://localhost:8082/v1/embeddings
+          - name: CORTEX_OWNER_NAME
+            value: ${OWNER_NAME}             # owner display name; empty = "the owner"
+          - name: CORTEX_OWNER_EMAIL
+            value: ${OWNER_EMAIL}            # contact for the weather User-Agent; empty = repo URL
       - name: gateway
         image: ${IMAGE}
         command: ["python", "-m", "uvicorn", "cortex_gateway.app:app", "--host", "0.0.0.0", "--port", "8430"]
@@ -114,6 +118,8 @@ properties:
             value: /app/gateway/hub_static   # serve the web Hub (cloud mode)
           - name: GATEWAY_OWNER_OIDS
             value: ${OWNER_OID}              # only this Entra account may sign in
+          - name: CORTEX_OWNER_NAME
+            value: ${OWNER_NAME}             # names the owner in MCP instructions + /intro; empty = "the owner"
           - name: GROQ_API_KEY
             value: ${GROQ_API_KEY}           # optional cloud voice (STT)
           - name: ELEVENLABS_API_KEY

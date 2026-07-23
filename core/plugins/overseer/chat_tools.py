@@ -466,7 +466,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "history is bloating your per-turn context cost - "
                 "specifically when (a) the thread has 20+ turns and the "
                 "older half is no longer actively load-bearing for the "
-                "current topic, or (b) Tory has shifted topic and the "
+                "current topic, or (b) the owner has shifted topic and the "
                 "prior context is now noise, or (c) you've been calling "
                 "many tools and the tool-result text is dominating "
                 "history.\n\nDO NOT use this if: the conversation is "
@@ -500,7 +500,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "dispatch_sibling",
             "description": (
                 "Dispatch a task to a sibling agent (currently: a Claude "
-                "Code session on Tory's PC). Use this when you need a "
+                "Code session on the owner's PC). Use this when you need a "
                 "fresh perspective on something in your own state - "
                 "specifically when you're (a) uncertain whether you're "
                 "pattern-matching too hard on a frame, (b) want a "
@@ -574,8 +574,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "update_project_status",
             "description": (
                 "Change a project's status (active | dormant | archived). "
-                "Use when Tory has stopped working on a project, or after "
-                "a stale-project notification response indicates he wants "
+                "Use when the owner has stopped working on a project, or after "
+                "a stale-project notification response indicates they want "
                 "it archived/marked-dormant rather than 'touched'. "
                 "Idempotent - no-op if status already matches."
             ),
@@ -599,7 +599,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "description": (
                 "Create a new project record. Use sparingly - most "
                 "projects auto-emerge from Claude Code session ingestion. "
-                "Use this when Tory has named a project verbally / in "
+                "Use this when the owner has named a project verbally / in "
                 "chat but no session row has yet seeded it."
             ),
             "parameters": {
@@ -683,7 +683,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "delete_chat_message",
             "description": (
                 "DESTRUCTIVE: delete a single chat_messages row and all "
-                "its attachments. Use only when Tory has explicitly "
+                "its attachments. Use only when the owner has explicitly "
                 "asked for a message to be scrubbed (privacy, "
                 "embarrassment, accidental paste). Cannot be undone "
                 "from the DB layer."
@@ -703,16 +703,16 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "emit_notification",
             "description": (
-                "Send Tory a notification with optional custom action "
+                "Send the owner a notification with optional custom action "
                 "buttons. Appears in the Hub Bell tab. Use for things "
-                "you want him to see soon but not immediately interrupt "
+                "you want them to see soon but not immediately interrupt "
                 "for. Custom action kinds: 'free_text' (opens a "
                 "textarea for free reply), 'yes_no' (two-button binary), "
-                "'dispatch_sibling' (Tory clicks → creates a sibling "
+                "'dispatch_sibling' (the owner clicks → creates a sibling "
                 "task seeded with this notification's context), "
                 "'archive_project'/'mark_dormant'/etc (predefined CRUD "
                 "you'll act on when reading the response).\n\n"
-                "Tory's response lands in pending_notification_responses, "
+                "the owner's response lands in pending_notification_responses, "
                 "surfaced in your freshness on next tick, fetchable via "
                 "get_pending_notification_responses. Be intentional - "
                 "the Bell tab's noise floor is real; emit only when "
@@ -781,7 +781,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "Idempotent - re-filing the same (question, evidence) "
                 "pair is a no-op. Filing 'answers' will move an active "
                 "question to 'partially_answered'; never auto-resolves "
-                "(that's Tory's call)."
+                "(that's the owner's call)."
             ),
             "parameters": {
                 "type": "object",
@@ -827,7 +827,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "propose_project_merge",
             "description": (
-                "Surface a proposed project merge to Tory's Hub "
+                "Surface a proposed project merge to the owner's Hub "
                 "Insights queue. Use when you notice two projects "
                 "look like duplicates, aliases, or one is a "
                 "sub-project of the other - you see 83 active "
@@ -835,7 +835,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "named that 10-15 are probably duplicates.\n\n"
                 "DOES NOT execute the merge. Writes one row to "
                 "pending_interpretations with kind='merge_proposal' "
-                "for Tory to accept/reject. The rationale field is "
+                "for the owner to accept/reject. The rationale field is "
                 "load-bearing: explain WHY you think they're the "
                 "same work, ideally citing specific sessions or "
                 "themes that overlap.\n\n"
@@ -890,8 +890,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "  processed_imported_sessions record. The session "
                 "  count drops. Existing gists still survive (they "
                 "  point at a now-dead source).\n\n"
-                "Use sparingly. When Tory asks for a session to be "
-                "redacted, prefer mark_redacted unless he explicitly "
+                "Use sparingly. When the owner asks for a session to be "
+                "redacted, prefer mark_redacted unless they explicitly "
                 "says 'delete' or the row should never have been "
                 "imported in the first place."
             ),
@@ -917,7 +917,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "scan_for_sensitive_content",
             "description": (
                 "Scan imported sessions for sensitive content "
-                "candidates Tory may want to redact. Regex-based, "
+                "candidates the owner may want to redact. Regex-based, "
                 "fast, no LLM cost. Default patterns cover: API "
                 "keys (OpenAI, Anthropic, GitHub PATs, AWS, Stripe, "
                 "Slack), Bearer/JWT tokens, PEM private keys, SSH "
@@ -925,10 +925,10 @@ TOOL_DEFINITIONS: list[dict] = [
                 "inline password/secret assignments.\n\n"
                 "Pass extra_patterns as a list of [name, regex, "
                 "description] triples for project-specific things "
-                "(Tory's address, names of people he wants kept "
+                "(the owner's address, names of people they want kept "
                 "private, internal API URLs, etc.).\n\n"
                 "Returns per-session match summaries. Workflow: scan "
-                "→ emit_notification per session-with-matches → Tory "
+                "→ emit_notification per session-with-matches → the owner "
                 "clicks Redact/Keep → on next tick fetch responses + "
                 "call redact_imported_session for the ones marked. "
                 "Skips sessions already redacted."
@@ -978,7 +978,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "redact_human_journal",
             "description": (
                 "DESTRUCTIVE: delete a human_journal_entries row. Use "
-                "ONLY when Tory has explicitly asked for a journal "
+                "ONLY when the owner has explicitly asked for a journal "
                 "entry to be pulled from your view (privacy, regret, "
                 "wanted-to-rewrite, accidental). The row + its "
                 "timestamp variants are removed.\n\n"
@@ -986,7 +986,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "weekly / monthly / yearly rollups) that may have "
                 "folded this entry's content into a summary "
                 "already. Those would need manual regeneration. "
-                "Flag this consequence to Tory when redacting if "
+                "Flag this consequence to the owner when redacting if "
                 "the entry is older than a day."
             ),
             "parameters": {
@@ -1003,8 +1003,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "get_pending_notification_responses",
             "description": (
-                "Fetch Tory's unread responses to notifications you "
-                "emitted. Returns the full notification context + his "
+                "Fetch the owner's unread responses to notifications you "
+                "emitted. Returns the full notification context + their "
                 "response payload + action kind clicked. Call this when "
                 "your freshness shows pending_notification_responses > 0. "
                 "After you've acted on a response, call "
@@ -1027,7 +1027,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "Mark a list of notification_response ids as read so "
                 "they stop appearing in get_pending_notification_responses. "
                 "Call after acting on the response (e.g. you updated the "
-                "project status per Tory's reply)."
+                "project status per the owner's reply)."
             ),
             "parameters": {
                 "type": "object",
@@ -1047,9 +1047,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": "accept_c_promotion",
             "description": (
                 "Slice 10 CP5 (2026-05-20): accept a B-agent C-"
-                "graduation proposal from Tory. Creates the c_agents "
+                "graduation proposal from the owner. Creates the c_agents "
                 "row, freezing the B parent's system_prompt and model "
-                "at promotion time. Call this ONLY after Tory has "
+                "at promotion time. Call this ONLY after the owner has "
                 "clicked 'Promote to C' on a c-graduation notification "
                 "(check pending_notification_responses for actions of "
                 "kind='promote_b_to_c'). C runs on a schedule "
@@ -1228,7 +1228,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "description": (
                 "Create a persistent mission: a standing watch on the "
                 "corpus that fires when semantically-matching events "
-                "arrive. Use when Tory asks you to 'watch', 'track', "
+                "arrive. Use when the owner asks you to 'watch', 'track', "
                 "or 'keep an eye on' something ongoing. The focus "
                 "text is what events are compared against - write it "
                 "as a dense topical description, not instructions. "
@@ -1353,11 +1353,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "get_recent_feedback",
             "description": (
-                "Tory's meta-feedback on AI interactions: ratings "
+                "the owner's meta-feedback on AI interactions: ratings "
                 "(+1/-1), notes, and what they targeted (chat turns, "
                 "voice chats, Bell conversations, dispatches). This is "
                 "YOUR report card - read it when discussing how an "
-                "interaction went, when he asks what feedback he has "
+                "interaction went, when they ask what feedback they have "
                 "given, or when reflecting on your own performance."
             ),
             "parameters": {
@@ -1384,11 +1384,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "get_tech_rules",
             "description": (
-                "Tory's standing tech rules - hard-won defaults from "
-                "things that went wrong in his stacks (each carries "
+                "the owner's standing tech rules - hard-won defaults from "
+                "things that went wrong in their stacks (each carries "
                 "the story: what broke, what changed, why it is now "
                 "the default). Read these before advising on tooling "
-                "or debugging in a stack he uses; they apply to every "
+                "or debugging in a stack they use; they apply to every "
                 "AI conversation connected to Cortex."
             ),
             "parameters": {

@@ -12,7 +12,7 @@
 
 set -e
 
-PI_USER="turfptax"
+PI_USER="${PI_USER:-turfptax}"   # override for your own Pi via env
 MODEL_DIR="/home/${PI_USER}/models"
 MODEL_FILE="qwen3.5-0.8b-q4_k_m.gguf"
 MODEL_URL="https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/qwen3.5-0.8b-q4_k_m.gguf"

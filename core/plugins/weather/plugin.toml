@@ -37,15 +37,10 @@ source_open_meteo_enabled = true   # current + forecast (global)
 source_noaa_swpc_enabled = true    # Kp + aurora forecast (global geomag)
 source_nws_enabled = true          # US severe weather alerts (NWS api.weather.gov)
 
-# Seed location on first boot. Lincoln, Nebraska (Tory's home).
-# Extra locations added via POST /plugins/weather/locations.
-[config.seed_location]
-slug = "lincoln-ne"
-name = "Lincoln, NE"
-lat = 40.8136
-lon = -96.7026
-timezone = "America/Chicago"
-is_primary = true
+# No seed location shipped: the public repo hardcodes no one's home town.
+# A deployment adds its first location via POST /plugins/weather/locations.
+# To auto-seed on first boot, set a [config.seed_location] block (slug /
+# name / lat / lon / timezone / is_primary) in a local, gitignored config.
 
 [dependencies]
 core_min = "0.1.0"

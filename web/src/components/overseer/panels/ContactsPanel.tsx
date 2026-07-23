@@ -3,7 +3,7 @@ import { apiFetch } from '../../../lib/api'
 
 // People taxonomy CP3 (2026-06-13): the dedicated Contacts panel over
 // the canonical overseer_people store. Full list/search + edit + the
-// structured person_notes channel (provenance + modality + note_kind —
+// structured person_notes channel (provenance + modality + note_kind,
 // the locked taxonomy axes). This is the surface Tory uses to clean up
 // and enrich contacts; the Data-tab explorer is cortex.db-only and does
 // NOT see these 193 rows.
@@ -43,7 +43,7 @@ interface PeopleStats {
 }
 
 const NOTE_KINDS = ['context', 'interaction', 'preference', 'commitment', 'fact']
-const PROVENANCES = ['tory-typed', 'tory-voice', 'overseer', 'ai-convo', 'import']
+const PROVENANCES = ['owner-typed', 'owner-voice', 'overseer', 'ai-convo', 'import']
 const MODALITIES = [
   'statement', 'observation', 'inference', 'hypothesis',
   'value-judgment', 'external-claim', 'pattern',
@@ -78,7 +78,7 @@ export function ContactsPanel() {
   // new-note form
   const [nBody, setNBody] = useState('')
   const [nKind, setNKind] = useState('context')
-  const [nProv, setNProv] = useState('tory-typed')
+  const [nProv, setNProv] = useState('owner-typed')
   const [nMod, setNMod] = useState('statement')
 
   const loadList = useCallback(async (q: string) => {
@@ -195,12 +195,12 @@ export function ContactsPanel() {
 
   return (
     <div className="flex flex-col gap-3 h-[calc(100vh-180px)]">
-      {/* Stats header — aids triage / cleanup */}
+      {/* Stats header: aids triage / cleanup */}
       {stats && (
         <div className="flex items-center gap-2 text-xs">
           <StatChip label="contacts" value={stats.total_people} />
           <StatChip label="unlinked" value={stats.orphans_count}
-            hint="no project links — prune candidates" />
+            hint="no project links, prune candidates" />
           <StatChip label="connectors" value={stats.multi_project_count}
             hint="linked to 2+ projects" />
           <StatChip label="added 7d" value={stats.added_7d} />

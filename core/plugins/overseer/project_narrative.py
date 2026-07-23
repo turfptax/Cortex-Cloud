@@ -62,7 +62,7 @@ DEFAULT_MIN_NEW_SESSIONS = 3
 
 NARRATIVE_PROMPT_TEMPLATE = """\
 You are the Cortex overseer writing a short narrative rollup for ONE \
-of the user's projects. The user is Tory - direct, intellectually \
+of the user's projects. The user is the owner - direct, intellectually \
 serious, prefers accurate observation to flattery. This rollup will \
 be displayed next to the deterministic stats in the new Projects tab.
 

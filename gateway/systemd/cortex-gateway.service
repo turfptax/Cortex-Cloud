@@ -6,8 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/turfptax/cortex-gateway
-EnvironmentFile=/home/turfptax/cortex-gateway/.env
+# Adjust these two paths to your install location before enabling the unit.
+WorkingDirectory=/opt/cortex-gateway
+EnvironmentFile=/opt/cortex-gateway/.env
 ExecStart=/usr/bin/python3 -m cortex_gateway
 Restart=on-failure
 RestartSec=3

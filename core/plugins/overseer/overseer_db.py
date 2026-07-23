@@ -928,7 +928,7 @@ CREATE TABLE IF NOT EXISTS person_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     person_id INTEGER NOT NULL,
     body TEXT NOT NULL,
-    provenance TEXT NOT NULL DEFAULT 'overseer',   -- WHO authored: tory-voice/tory-typed/overseer/ai-convo/import
+    provenance TEXT NOT NULL DEFAULT 'overseer',   -- WHO authored: owner-voice/owner-typed/overseer/ai-convo/import
     modality TEXT NOT NULL DEFAULT 'statement',     -- claim TYPE: observation/statement/inference/hypothesis/value-judgment/external-claim/pattern
     note_kind TEXT NOT NULL DEFAULT 'context',      -- lens-ish: context/interaction/preference/commitment/fact
     superseded_by INTEGER,                          -- stance/supersession edge: NULL = live; else the note id that replaced this
@@ -1651,7 +1651,7 @@ class OverseerDB(CortexDB):
                 "rationale": (
                     "Documented Anthropic training pattern: high "
                     "skepticism about non-mainstream topics by default. "
-                    "Tory's stated values include 'making the hidden "
+                    "The owner's stated values include 'making the hidden "
                     "visible' specifically against this skepticism."
                 ),
                 "confidence": "high",
@@ -2291,7 +2291,7 @@ class OverseerDB(CortexDB):
              "the overconfident calls (per overseer L99 audit 2026-05-27)."),
             ("b", "project_merge_check", "flash",
              "Structural same/distinct/subproject comparison - Flash "
-             "handles this cleanly. Upgrade if Tory rates output poorly."),
+             "handles this cleanly. Upgrade if the owner rates output poorly."),
         )
         for agent_type, agent_name, tier, notes in defaults:
             try:
