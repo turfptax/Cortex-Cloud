@@ -60,8 +60,17 @@ async def core_proxy(path: str, request: Request):
     s = get_settings()
     url = f"{s.core_url}/{path}"
     body = await request.body()
-    headers = {"Content-Type": request.headers.get("content-type",
-                                                   "application/json")}
+    # Forward the caller's headers so the core sees what it needs. The file
+    # upload endpoint, for one, requires X-Filename / X-Description / X-Tags;
+    # the old proxy sent only Content-Type, so every desktop import failed
+    # with "Missing X-Filename header". Drop the hop-by-hop headers plus the
+    # caller's auth/host (the proxy re-authenticates to the core below) and
+    # content-length (httpx recomputes it for the forwarded body).
+    _drop = {"host", "authorization", "content-length", "connection",
+             "accept-encoding", "transfer-encoding"}
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in _drop}
+    headers.setdefault("Content-Type", "application/json")
     auth = (s.core_username, s.core_token)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, auth=auth) as client:
