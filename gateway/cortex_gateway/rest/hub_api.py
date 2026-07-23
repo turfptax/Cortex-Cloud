@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from .. import grants
 from ..config import get_settings
 from ..identity import owner_ok
 
@@ -229,6 +230,47 @@ async def plugins_list():
     # sidecar plugins have no cloud equivalent, so return the desktop
     # backend's shape (a plain list) empty instead of 404ing forever.
     return []
+
+
+# -- /api/connections (owner-facing connector approval from the WEB) ---
+# The phone app manages grants via /v1/connections (app-scope token). A
+# friend deploying their own instance may have no phone app, so mirror the
+# same grant management here on the owner's Entra-authenticated /api surface
+# (login + CSRF enforced by the router dependency). Same grants.* logic.
+
+
+class _ApproveConnIn(BaseModel):
+    level: str = "full"          # "none" | "full"
+    always: bool = True          # web approvals default to durable
+
+
+@router.get("/connections")
+def api_list_connections(status: str = ""):
+    """All connector connections (or ?status=pending for ones awaiting you)."""
+    return {"connections": grants.list_grants(status or None)}
+
+
+@router.post("/connections/{grant_id}/approve")
+def api_approve_connection(grant_id: int, body: _ApproveConnIn):
+    """Approve (or change the level of) a connection. Grants read, and, at
+    level=full, write. Immediate: the corpus gate consults it on every call."""
+    try:
+        out = grants.approve(grant_id, body.level, always=body.always,
+                             by="web-owner")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if out is None:
+        raise HTTPException(404, "connection not found")
+    return out
+
+
+@router.post("/connections/{grant_id}/revoke")
+def api_revoke_connection(grant_id: int):
+    """Disconnect: revoke the grant + its outstanding tokens."""
+    out = grants.revoke(grant_id)
+    if out is None:
+        raise HTTPException(404, "connection not found")
+    return {"ok": True, **out}
 
 
 # -- /api/pi (CMD-channel routes, names kept for SPA compatibility) ----
