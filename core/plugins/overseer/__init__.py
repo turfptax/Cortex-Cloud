@@ -3987,6 +3987,12 @@ class OverseerPlugin(Plugin):
             file_hash=digest,
             metadata_json=json.dumps(meta_extra),
         )
+        # Re-push of a GROWN session (same imported_id, new hash, since
+        # the same-hash case returned early above): clear the processed
+        # marker so the tick re-gists the appended content. Without this
+        # a session that was gisted once and then kept growing would
+        # update metadata forever but never be re-interpreted.
+        self.overseer_db.unmark_imported_processed(imported_id)
         return {
             "ok": True, "imported_id": imported_id, "file_hash": digest,
             "source_path": str(dest_path),

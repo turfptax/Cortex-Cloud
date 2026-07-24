@@ -4502,6 +4502,21 @@ class OverseerDB(CortexDB):
         ).fetchone()
         return row is not None
 
+    def unmark_imported_processed(self, imported_id):
+        """Re-queue a session for the tick's gist step.
+
+        Called when a re-imported session's content CHANGED (same
+        imported_id, new file_hash): the desktop Agent re-pushes whole
+        files as sessions grow, and without clearing this marker the
+        appended content would update metadata but never be re-gisted,
+        staying invisible to the interpretive layer forever.
+        """
+        self._conn.execute(
+            "DELETE FROM processed_imported_sessions WHERE imported_id = ?",
+            (imported_id,),
+        )
+        self._safe_commit()
+
     def mark_imported_processed(self, imported_id, *, gist_id=None,
                                 notes_used=0, error=""):
         self._conn.execute(
