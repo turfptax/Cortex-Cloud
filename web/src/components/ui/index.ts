@@ -1,3 +1,8 @@
 export { Button, type ButtonProps } from './Button'
 export { Card, type CardProps } from './Card'
 export { Badge, type BadgeProps } from './Badge'
+export { Chip } from './Chip'
+export { Tag } from './Tag'
+export { Field } from './Field'
+export { SectionLabel } from './SectionLabel'
+export { kindColor, colorForKind, kindLabel } from './kind'

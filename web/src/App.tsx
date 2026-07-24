@@ -5,12 +5,13 @@ import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
 import { SimplesPage } from './components/simples/SimplesPage'
 import { JournalPage } from './components/journal/JournalPage'
+import { TodayPage } from './components/today/TodayPage'
 
 export type Page =
-  | 'search' | 'corpus' | 'chat' | 'simples' | 'journal' | 'settings'
+  | 'today' | 'search' | 'corpus' | 'chat' | 'simples' | 'journal' | 'settings'
 
 const PAGES: readonly Page[] = [
-  'search', 'corpus', 'chat', 'simples', 'journal', 'settings',
+  'today', 'search', 'corpus', 'chat', 'simples', 'journal', 'settings',
 ]
 
 // Pre-redesign hashes keep working (bookmarks, muscle memory). The old
@@ -32,7 +33,7 @@ function pageFromHash(): Page {
   const h = window.location.hash.replace(/^#\/?/, '').split('/')[0]
   if ((PAGES as readonly string[]).includes(h)) return h as Page
   if (h in LEGACY_ALIASES) return LEGACY_ALIASES[h]
-  return 'search'
+  return 'today'
 }
 
 function useHashPage(): [Page, (p: Page) => void] {
@@ -56,6 +57,7 @@ function App() {
 
   return (
     <Layout page={page} setPage={setPage}>
+      {page === 'today' && <TodayPage />}
       {page === 'search' && <SearchPage />}
       {/* Chat is the overseer chat promoted to a top-level surface
         * (IA overhaul 2026-07-10); it shares the OverseerPage instance
