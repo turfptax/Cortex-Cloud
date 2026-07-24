@@ -208,28 +208,7 @@ def _parse_command(command: str, raw: dict) -> dict:
 async def health():
     s = get_settings()
     return {"status": "ok", "mode": "cloud",
-            "core_url": s.core_url, "lmstudio_url": ""}
-
-
-@router.get("/chat/health")
-async def chat_health():
-    # The SPA polls this for its LM Studio dot; there is no LM Studio in
-    # the cloud. A steady false beats a 404 every 15 seconds.
-    return {"lmstudio_online": False, "mode": "cloud"}
-
-
-@router.get("/debug/logs")
-async def debug_logs(tail: int = 100):
-    return {"lines": [], "total": 0,
-            "log_file": "cloud gateway: see container logs (az containerapp logs)"}
-
-
-@router.get("/plugins")
-async def plugins_list():
-    # The SPA polls this every 5s (it gates the Video nav item). Desktop
-    # sidecar plugins have no cloud equivalent, so return the desktop
-    # backend's shape (a plain list) empty instead of 404ing forever.
-    return []
+            "core_url": s.core_url}
 
 
 # -- /api/connections (owner-facing connector approval from the WEB) ---
@@ -541,14 +520,6 @@ async def voice_config():
         "preferred_stt": "groq" if groq else "on-device",
         "preferred_tts": "elevenlabs" if eleven else "on-device",
     }
-
-
-@router.get("/voice/agent/status")
-async def voice_agent_status():
-    """The Pipecat real-time voice agent runs as a local sidecar over
-    WebRTC and has no cloud path; report it unavailable so the SPA hides
-    the panel instead of trying to start a process that isn't there."""
-    return {"running": False, "reason": "desktop_only", "url": None}
 
 
 @router.api_route("/overseer/{path:path}", methods=["GET", "POST", "DELETE"])

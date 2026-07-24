@@ -175,11 +175,6 @@ def test_api_health_reports_cloud_mode(webui):
     assert body["status"] == "ok"
 
 
-def test_chat_health_reports_no_lmstudio(webui):
-    body = webui.get("/api/chat/health", headers=PRINCIPAL).json()
-    assert body["lmstudio_online"] is False
-
-
 def test_pi_online_uses_core_health(webui):
     FakeAsyncClient.responses[("GET", "/health")] = {"ok": True}
     body = webui.get("/api/pi/online", headers=PRINCIPAL).json()
@@ -292,11 +287,6 @@ def test_overseer_path_traversal_rejected(webui):
     assert FakeAsyncClient.calls == []
 
 
-def test_plugins_stub_returns_empty_list(webui):
-    body = webui.get("/api/plugins", headers=PRINCIPAL).json()
-    assert body == []
-
-
 # -- cloud voice (A3) --------------------------------------------------
 
 def test_voice_config_reports_cloud_backends(webui):
@@ -330,11 +320,6 @@ def test_voice_tts_returns_audio(webui):
     assert resp.headers["content-type"] == "audio/mpeg"
     call = FakeAsyncClient.calls[0]
     assert call["headers"]["xi-api-key"] == "el-test-key"
-
-
-def test_voice_agent_status_unavailable_in_cloud(webui):
-    body = webui.get("/api/voice/agent/status", headers=PRINCIPAL).json()
-    assert body["running"] is False and body["reason"] == "desktop_only"
 
 
 def test_voice_stt_501_without_key(webui, monkeypatch):
