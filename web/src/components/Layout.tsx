@@ -17,10 +17,11 @@ interface NavItem {
 // the LM Studio / Pi status dots are gone; this is a cloud-only, single-
 // owner app. Tab structure moves to the phone-mirror IA in a later slice.
 const navItems: NavItem[] = [
+  { id: 'today', label: 'Today', icon: '🏠' },
   { id: 'search', label: 'Search', icon: '🔍' },
   { id: 'corpus', label: 'Corpus', icon: '🧠' },
   { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'simples', label: 'Simples', icon: '📅' },
+  { id: 'simples', label: 'Plan', icon: '📅' },
   { id: 'journal', label: 'Journal', icon: '📓' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
