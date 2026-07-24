@@ -9,7 +9,6 @@ import { ProjectsTab } from './ProjectsTab'
 const ExplorerPanel = lazy(() =>
   import('./ExplorerPanel').then((m) => ({ default: m.ExplorerPanel })))
 import { useVoiceMode } from '../../hooks/useVoiceMode'
-import { useCloudMode } from '../../hooks/useCloudMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
 import { WorkingMemoryView } from './panels/WorkingMemoryView'
@@ -17,7 +16,6 @@ import { Card, PanelLoading, SourceBadge } from './panels/widgets'
 import { StatCard, Row } from './panels/WorkingMemoryView'
 import { SqueezePanel } from './panels/SqueezePanel'
 import { ContactsPanel } from './panels/ContactsPanel'
-import { VoicePanel } from './panels/VoicePanel'
 
 import {
   type StatusResp,
@@ -63,11 +61,11 @@ import {
 // Dialectic sunset (writer off since 2026-05-24) and replaced by
 // Squeeze (AI report card from graded dispatches); Classify folded
 // into the Projects tab.
-type Tab = 'overview' | 'chat' | 'squeeze' | 'projects' | 'notifications' | 'explorer' | 'contacts' | 'voice'
+type Tab = 'overview' | 'chat' | 'squeeze' | 'projects' | 'notifications' | 'explorer' | 'contacts'
 
 const CORPUS_TABS: readonly Tab[] = [
   'overview', 'projects', 'squeeze',
-  'explorer', 'notifications', 'contacts', 'voice',
+  'explorer', 'notifications', 'contacts',
 ]
 
 // Old bookmarks keep landing somewhere sensible.
@@ -860,10 +858,6 @@ export function OverseerPage() {
   }
 
   const voice = useVoiceMode({ sendVoiceTurn: handleVoiceTurn })
-  // The Voice tab drives the Pipecat agent, a local WebRTC sidecar with
-  // no cloud path; hide it in the cloud Hub. The chat mic (voice mode)
-  // stays: it uses the gateway's Groq STT + ElevenLabs TTS routes.
-  const { cloud: isCloud } = useCloudMode()
 
   const handleSendChat = async () => {
     const message = chatInput.trim()
@@ -1267,7 +1261,6 @@ export function OverseerPage() {
                 ['squeeze', 'Squeeze'],
                 ['explorer', 'Explorer'],
                 ['contacts', 'Contacts'],
-                ...(isCloud ? [] : [['voice', 'Voice'] as const]),
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1342,7 +1335,6 @@ export function OverseerPage() {
         />
       )}
       {tab === 'contacts' && <ContactsPanel />}
-      {tab === 'voice' && <VoicePanel />}
       {tab === 'notifications' && (
         <NotificationsPanel
           notifications={notifications}

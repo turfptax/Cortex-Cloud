@@ -3,11 +3,6 @@ import { useData } from '../../hooks/useData'
 import { TableBrowser } from './TableBrowser'
 import { RecordEditor } from './RecordEditor'
 import { DataEntryForm } from './DataEntryForm'
-import { type StatusInfo } from '../../App'
-
-interface Props {
-  status: StatusInfo
-}
 
 // Icons for each table
 const TABLE_ICONS: Record<string, string> = {
@@ -24,7 +19,7 @@ const TABLE_ICONS: Record<string, string> = {
   pet_interactions: '🐾',
 }
 
-export function DataPage({ status }: Props) {
+export function DataPage() {
   const data = useData()
 
   // Load tables on mount
@@ -66,17 +61,9 @@ export function DataPage({ status }: Props) {
             <h2 className="text-base font-semibold text-text-primary">
               Database Explorer
             </h2>
-            <span
-              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
-                status.coreOnline
-                  ? 'bg-success/20 text-success'
-                  : 'bg-text-muted/20 text-text-muted'
-              }`}
-            >
-              {status.coreOnline && (
-                <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse" />
-              )}
-              {status.coreOnline ? 'Connected' : 'Offline'}
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-success/20 text-success">
+              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse" />
+              Connected
             </span>
           </div>
           <div className="flex items-center gap-3">
