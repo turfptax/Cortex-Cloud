@@ -113,6 +113,14 @@ secrets_paths = [
 # Slice 3i CP2: distill corrections → blindspot proposals.
 # Cheap clustering of small text rows - Flash territory.
 "distill-corrections" = "google/gemini-2.5-flash"
+# OPT-4 curator steps (2026-07-26). Task extraction and org triage
+# are routine structured extraction; the merge check is structural
+# comparison (the retired b_project_merge_check agent also defaulted
+# to flash tier). Upgrade merge-check to sonnet if verdicts rate
+# poorly.
+"task-extract"        = "google/gemini-2.5-flash"
+"org-classify"        = "google/gemini-2.5-flash"
+"merge-check"         = "google/gemini-2.5-flash"
 
 [hooks]
 subscribe = [
@@ -265,7 +273,11 @@ loop_journal_boot_read_n = 5      # how many recent entries to log on plugin loa
 # temporal cadence step could fire its 22:00-local trigger). The cap
 # is per LOCAL day (matches the user's calendar). The cooldown
 # prevents a flurry of rapid ticks from each generating an entry.
-loop_journal_max_per_local_day = 0  # 0 = unlimited (Slice 8); cooldown is the floor
+# OPT-4 demotion (2026-07-26): once per local day. The daily temporal
+# narrative already covers "what happened today"; two overlapping
+# daily narratives is redundancy, not value (OPT plan 5.5). The
+# journal stays the AI's own record in overseer.db per R5.
+loop_journal_max_per_local_day = 1
 loop_journal_min_minutes_between = 90
 
 # Slice 3f.5 #2: question-centered routing. Every new gist is routed
@@ -376,6 +388,46 @@ loop_youtube_channels = [
     "openmuscle:UC12raMSYtI46-IMjA5DaQ_g:open-muscle",
 ]
 loop_youtube_ingest_interval_hours = 12
+
+# ── OPT-4: curator steps (2026-07-26) ─────────────────────────────
+# Curation is the loop's main function (OPT plan section 5). Each
+# step is independently disableable. Nothing structural auto-applies:
+# org placements and merges are Bell proposals; task rows are written
+# proposed=1 through the core's HTTP upsert contract.
+
+# Step 8.4: zero-LLM fingerprint pass (R6 staleness mechanic). The
+# stamp lives in the shared narrative generator; this pass only
+# compares and flags. Queue consumed by OPT-6's narrative-gate rewire.
+loop_fingerprint_pass = true
+
+# Step 1c.1: batched task extraction over fresh gists. The call cap
+# is a RESERVATION, decoupled from import gisting throughput; gists
+# beyond the per-tick window carry over via a high-water mark.
+loop_task_extraction = true
+loop_task_extract_max_calls = 3
+loop_task_extract_batch = 10
+
+# Step 1b.5: structure audit. Deterministic counters every tick; the
+# LLM half copies the distill-corrections gate (>= min_pending items
+# AND >= interval hours), proposes org placements (one batched Flash
+# call over up to classify_per_tick projects), and runs the folded
+# b_project_merge_check prompt as a mandatory second pass on every
+# merge proposal before the Bell fires.
+loop_structure_audit = true
+loop_audit_min_pending = 3
+loop_audit_interval_hours = 24
+loop_audit_classify_per_tick = 10
+loop_audit_merge_checks_per_tick = 2
+loop_audit_max_cost_usd = 0.05
+
+# Import step reserve (folds task #14): the import drain stops before
+# the last N call slots so downstream steps (task extraction,
+# journal, distill) are never starved by a big backlog.
+loop_import_reserve_calls = 5
+
+# OPT-4 demotion: auto-tag every other tick. Tags feed browse;
+# curation feeds recall. 1 restores every-tick behavior.
+loop_auto_tag_every_n_ticks = 2
 
 # ── Slice 3e: notifications rules ─────────────────────────────────
 loop_run_notifications = true

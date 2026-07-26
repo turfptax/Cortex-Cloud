@@ -821,7 +821,14 @@ CREATE TABLE IF NOT EXISTS project_summaries (
     narrative TEXT NOT NULL DEFAULT '',
     narrative_updated_at TEXT,
     narrative_session_count_at_update INTEGER NOT NULL DEFAULT 0,
-    stats_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    stats_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- OPT-4 (R6): sha256 over the project's children (gists + task
+    -- rows). Stamped by the shared narrative generator on regen;
+    -- compared by the loop's fingerprint pass, which sets
+    -- narrative_stale on mismatch. Existing installs get both via
+    -- _migrate_opt4_fingerprint.
+    child_fingerprint TEXT NOT NULL DEFAULT '',
+    narrative_stale INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_project_summaries_last_active
     ON project_summaries(last_active_at);
@@ -1413,6 +1420,9 @@ class OverseerDB(CortexDB):
         # OPT-0 (2026-07-26): gists carry their project for pull
         # attribution. Same direct-call rule.
         self._migrate_opt0_gist_project()
+        # OPT-4 (2026-07-26): R6 fingerprint columns on
+        # project_summaries. Same direct-call rule.
+        self._migrate_opt4_fingerprint()
         # Slice 9.4.1 (2026-05-16): every _at column gets a paired
         # local_<col>_at populated by trigger. Auto-discovers any new
         # tables added by future slices so the "time always shows
@@ -3087,6 +3097,26 @@ class OverseerDB(CortexDB):
             self._safe_commit()
         except Exception:
             pass  # column already exists
+
+    def _migrate_opt4_fingerprint(self):
+        """OPT-4 (2026-07-26): R6 staleness columns on
+        project_summaries. child_fingerprint is stamped by the shared
+        narrative generator (curator.stamp_fingerprint via
+        apply_narrative); narrative_stale is set by the loop's
+        fingerprint pass on child mismatch. CREATE TABLE IF NOT
+        EXISTS never retrofits, so existing installs need the
+        ALTERs."""
+        for ddl in (
+            "ALTER TABLE project_summaries ADD COLUMN "
+            "child_fingerprint TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE project_summaries ADD COLUMN "
+            "narrative_stale INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                self._conn.execute(ddl)
+                self._safe_commit()
+            except Exception:
+                pass  # column already exists
 
     def backfill_gist_project_tags(self):
         """One-time OPT-0 backfill: stamp project_tag on existing

@@ -330,16 +330,32 @@ def refresh_summary(db, project: str, names=None) -> dict:
     return {"ok": True, "project": project, "stats": stats}
 
 
-def refresh_all_summaries(db) -> dict:
+def refresh_all_summaries(db, core=None) -> dict:
     """Recompute stats for every distinct project in
-    imported_sessions. Returns counts for the caller to log."""
-    projects = db.list_distinct_imported_projects()
+    imported_sessions. Returns counts for the caller to log.
+
+    OPT-4: when the read-only core handle is provided, observed names
+    group by canonical tag through project_aliases (mirroring the
+    loop's grouping) so the rebuild refreshes canonical rows instead
+    of re-creating alias-keyed duplicates."""
+    observed = db.list_distinct_imported_projects()
+    alias_map: dict = {}
+    if core is not None:
+        try:
+            for r in core.query(
+                    "SELECT alias, project_tag FROM project_aliases"):
+                alias_map[r["alias"]] = r["project_tag"]
+        except Exception:
+            alias_map = {}
+    groups: dict = {}
+    for p in observed:
+        groups.setdefault(alias_map.get(p, p), set()).add(p)
     refreshed = 0
     failed = 0
     errors: list[str] = []
-    for project in projects:
+    for project, names in groups.items():
         try:
-            refresh_summary(db, project)
+            refresh_summary(db, project, names=sorted(names))
             refreshed += 1
         except Exception as e:
             failed += 1
@@ -347,7 +363,7 @@ def refresh_all_summaries(db) -> dict:
             log.exception("refresh_summary failed for %s: %s", project, e)
     return {
         "ok": True,
-        "projects_total": len(projects),
+        "projects_total": len(groups),
         "refreshed": refreshed,
         "failed": failed,
         "errors": errors[:10],

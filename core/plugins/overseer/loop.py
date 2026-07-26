@@ -58,6 +58,7 @@ from question_routing import route_evidence_to_questions
 from blindspots import applicable_blindspots
 from detail import make_token
 from distill_corrections import distill_uncondidated_corrections
+import curator
 import project_summary
 import project_narrative
 import temporal as T_clock
@@ -510,14 +511,48 @@ class OverseerLoop:
                 self._log.exception("auto-classify failed: %s", e)
                 summary["errors"].append("classify: " + str(e)[:200])
 
+        # Step 1b.5 (OPT-4): structure audit. Deterministic hierarchy
+        # counters every tick (zero LLM); the gated LLM half proposes
+        # org placements and runs the folded merge check as a
+        # mandatory second pass before any merge Bell fires.
+        # Proposals only; nothing structural auto-applies.
+        if self._cfg.get("loop_structure_audit", True):
+            try:
+                curator.run_structure_audit(
+                    core=self._core, db=self._db, llm=self._llm,
+                    cfg=self._cfg, budget=budget, summary=summary)
+            except Exception as e:
+                self._log.exception("structure audit step failed: %s", e)
+                summary["errors"].append(
+                    "structure_audit: " + str(e)[:200])
+
         # Step 1c: summarize imports (per-classification routing).
         if (self._cfg.get("loop_summarize_imports", True)
                 and not budget.exhausted()):
             try:
-                self._summarize_imported_sessions(budget, summary)
+                self._summarize_imported_sessions(
+                    budget, summary,
+                    reserve=int(self._cfg.get(
+                        "loop_import_reserve_calls", 5)))
             except Exception as e:
                 self._log.exception("summarize-imports step failed: %s", e)
                 summary["errors"].append("summarize_imports: " + str(e)[:200])
+
+        # Step 1c.1 (OPT-4): task extraction over fresh gists. Its own
+        # reserved call cap (max 3 Flash calls, batching up to 10
+        # gists each) means it can never eat import gisting's slots,
+        # and the import step's reserve floor keeps the reverse true.
+        if (self._cfg.get("loop_task_extraction", True)
+                and not budget.exhausted()):
+            try:
+                curator.run_task_extraction(
+                    core=self._core, db=self._db, llm=self._llm,
+                    cfg=self._cfg, budget=budget, summary=summary,
+                    upsert=self._core_upsert)
+            except Exception as e:
+                self._log.exception("task extraction step failed: %s", e)
+                summary["errors"].append(
+                    "task_extract: " + str(e)[:200])
 
         # Step 1c.5 (Slice 9.4 CP2): periodic GitHub ingest.
         # Runs on its own schedule via interval_hours, not every tick.
@@ -573,8 +608,12 @@ class OverseerLoop:
                 summary["errors"].append("rollups: " + str(e)[:200])
 
         # Step 2: auto-tag untagged notes
+        # OPT-4 demotion: every Nth tick (default every other). Tags
+        # feed browse; curation feeds recall. Justified on signal
+        # redundancy, not funding (OPT plan 5.5).
         if (self._cfg.get("loop_auto_tag_notes", True)
-                and not budget.exhausted()):
+                and not budget.exhausted()
+                and self._auto_tag_tick_due()):
             try:
                 self._tag_untagged_notes(budget, summary)
             except Exception as e:
@@ -731,6 +770,22 @@ class OverseerLoop:
                 summary["errors"].append(
                     "project_narrative: " + str(e)[:200])
 
+        # Step 8.4 (OPT-4, R6): fingerprint pass. Zero LLM. Compares
+        # each project's stored child fingerprint against a recompute
+        # over its gists + task rows; mismatch flags narrative_stale.
+        # COMPARE ONLY here; the stamp lives in the shared narrative
+        # generator so a manual regen never re-flags. The stale queue
+        # accumulates unconsumed until OPT-6 rewires the narrative
+        # gate onto it (the 24h/3-session gate above stays this
+        # slice), so there is exactly one trigger system per level.
+        if self._cfg.get("loop_fingerprint_pass", True):
+            try:
+                curator.run_fingerprint_pass(
+                    db=self._db, core=self._core, summary=summary)
+            except Exception as e:
+                self._log.exception("fingerprint pass failed: %s", e)
+                summary["errors"].append("fingerprint: " + str(e)[:200])
+
         # (Step 9 - temporal cadence - was here. Moved to Step 0 in
         # Slice 5.5 so time-anchored daily/weekly/monthly narratives
         # run before any other LLM step claims the day's budget.)
@@ -853,7 +908,8 @@ class OverseerLoop:
     # ── Step 1b: summarize imported sessions ────────────────────
 
     def _summarize_imported_sessions(self, budget: TickBudget,
-                                     summary: dict) -> None:
+                                     summary: dict,
+                                     reserve: int = 0) -> None:
         """Find unprocessed imported_sessions and summarize each.
 
         No high-water mark - imports are explicit user actions, so we
@@ -874,10 +930,21 @@ class OverseerLoop:
         if not unprocessed:
             return
 
+        # OPT-4 (folds task #14): stop before the last N call slots so
+        # downstream steps (task extraction, journal, distill) are
+        # never starved by a big import drain. Cost exhaustion still
+        # breaks via exhausted(); the reserve only floors the CALL
+        # counter, which is the one imports actually pin. The reserve
+        # is a PARAMETER (tick passes the config value; backfill and
+        # targeted drains pass 0) so a small-budget manual backfill is
+        # never silently floored to zero rows.
         for imp in unprocessed:
-            if budget.exhausted():
+            calls_left = budget.remaining()["calls_remaining"]
+            if budget.exhausted() or calls_left <= reserve:
                 summary["skipped_due_to_budget"].append(
                     "imported:" + imp["id"])
+                if calls_left <= reserve and not budget.exhausted():
+                    summary["import_reserve_floor_hit"] = True
                 break
             try:
                 outcome = self._summarize_one_imported(imp, budget, summary)
@@ -1111,7 +1178,11 @@ class OverseerLoop:
                     "skipped": "a tick or backfill is already running"}
         try:
             if max_calls is None:
-                max_calls = int(limit) + 10
+                # Each import costs ~2 calls (gist + evidence
+                # routing), so default to 2x the row limit plus
+                # slack. The old limit+10 default silently halved
+                # throughput on large targeted drains (task #13).
+                max_calls = int(limit) * 2 + 10
             budget = TickBudget(
                 max_calls=int(max_calls),
                 max_cost_usd=float(max_cost_usd),
@@ -1339,12 +1410,14 @@ class OverseerLoop:
         self._db.set_overseer_state(self.NOTES_MARK_KEY, anchor)
         return anchor
 
-    def _writeback_note_tags(self, note_id, tags):
-        """Write tags to cortex.db's notes.tags column via the local
-        core API (the overseer's direct core handle is read-only by
-        design; the HTTP upsert is the public write contract and
-        UPDATEs only supplied columns). Best-effort: failure logs and
-        the sidecar tags still exist."""
+    def _core_upsert(self, table, data):
+        """OPT-4 write path: write one row to cortex.db through the
+        local core API. Generalizes the _writeback_note_tags
+        precedent: the overseer's direct core handle is read-only by
+        design (plugin.toml core_memory_write=false stands); the HTTP
+        upsert is the public write contract and runs the core's guard
+        rails (task status vocabulary, project existence, uuid
+        idempotency). Returns {ok, id?, error?}; never raises."""
         import base64
         import urllib.request
         try:
@@ -1354,9 +1427,7 @@ class OverseerLoop:
                 HTTP_USERNAME, HTTP_PASSWORD = "cortex", "cortex"
             body = json.dumps({
                 "command": "upsert",
-                "payload": {"table": "notes",
-                            "data": {"id": int(note_id),
-                                     "tags": ",".join(tags)}},
+                "payload": {"table": table, "data": data},
             }).encode("utf-8")
             auth = base64.b64encode("{}:{}".format(
                 HTTP_USERNAME, HTTP_PASSWORD).encode()).decode()
@@ -1366,11 +1437,29 @@ class OverseerLoop:
                          "Authorization": "Basic " + auth},
                 method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:
-                resp.read()
+                raw = resp.read().decode("utf-8", "replace")
+            payload = json.loads(raw)
+            response = str(payload.get("response") or "")
+            if response.startswith("RSP:upsert:"):
+                out = json.loads(response[len("RSP:upsert:"):])
+                return {"ok": True, "id": out.get("id")}
+            return {"ok": False, "error": response[:300]}
         except Exception as e:
+            self._log.warning("core upsert failed for %s: %s", table, e)
+            return {"ok": False, "error": str(e)[:300]}
+
+    def _writeback_note_tags(self, note_id, tags):
+        """Write tags to cortex.db's notes.tags column via the local
+        core API (the overseer's direct core handle is read-only by
+        design; the HTTP upsert is the public write contract and
+        UPDATEs only supplied columns). Best-effort: failure logs and
+        the sidecar tags still exist."""
+        out = self._core_upsert(
+            "notes", {"id": int(note_id), "tags": ",".join(tags)})
+        if not out.get("ok"):
             self._log.warning(
                 "tags column write-back failed for note %s: %s",
-                note_id, e)
+                note_id, out.get("error"))
 
     def _tag_one_batch(self, batch: list[dict], budget: TickBudget,
                        max_per_note: int) -> tuple[int, int]:
@@ -1499,6 +1588,23 @@ class OverseerLoop:
                     summary["rollups_failed"] += 1
 
     # ── Step 7: distill corrections (3i CP2) ────────────────────
+
+    def _auto_tag_tick_due(self) -> bool:
+        """OPT-4 demotion: run the auto-tag step every Nth tick
+        (default every other). The counter persists in overseer_state
+        so the cadence survives restarts. N <= 1 restores every-tick
+        behavior."""
+        n = int(self._cfg.get("loop_auto_tag_every_n_ticks", 2))
+        if n <= 1:
+            return True
+        try:
+            count = int(self._db.get_overseer_state(
+                "auto_tag_tick_counter") or 0) + 1
+            self._db.set_overseer_state(
+                "auto_tag_tick_counter", str(count))
+            return count % n == 1
+        except Exception:
+            return True
 
     def _journal_cadence_ok(self, summary: dict) -> bool:
         """Slice 5.5 cadence-calibration gate. Returns True when the
@@ -1750,6 +1856,7 @@ class OverseerLoop:
                     cost_usd=cost,
                     session_count_at_update=row.get(
                         "session_count", 0),
+                    core=self._core,
                 )
             except Exception as e:
                 self._log.exception(
@@ -2518,6 +2625,40 @@ class OverseerLoop:
                 "pending_for_me": 0,
             }
 
+        # OPT-4: curation state (zero LLM). Open/proposed task posture
+        # via the read-only core handle; audit counters + the stale-
+        # fingerprint queue from the curator steps. Every block is
+        # best-effort so a pre-OPT core schema never breaks the build.
+        curation: dict[str, Any] = {}
+        try:
+            audit_json = self._db.get_overseer_state(
+                "structure_audit_json")
+            if audit_json:
+                curation["structure_audit"] = json.loads(audit_json)
+        except Exception:
+            pass
+        try:
+            stale_row = self._db._conn.execute(
+                "SELECT COUNT(*) FROM project_summaries "
+                "WHERE narrative_stale = 1").fetchone()
+            curation["stale_fingerprint_queue"] = int(stale_row[0])
+        except Exception:
+            pass
+        try:
+            curation["open_tasks_by_project"] = self._core.query(
+                "SELECT project_tag, COUNT(*) AS open_tasks "
+                "FROM tasks WHERE proposed = 0 "
+                "AND status IN ('open', 'in_progress', 'blocked') "
+                "GROUP BY project_tag ORDER BY open_tasks DESC "
+                "LIMIT 10")
+            prop = self._core.query(
+                "SELECT COUNT(*) AS n FROM tasks "
+                "WHERE proposed = 1 AND status = 'open'")
+            curation["proposed_tasks_pending"] = (
+                int(prop[0]["n"]) if prop else 0)
+        except Exception:
+            pass
+
         # Slice 9.4.1 (2026-05-16): always emit BOTH UTC and local-
         # with-offset timestamps so any display surface can pick the
         # correct frame. See memory/feedback_time_always_local_with_tz.md.
@@ -2529,7 +2670,10 @@ class OverseerLoop:
         return {
             "built_at": _utc_iso(),
             "local_built_at": _local_built_at,
-            "schema_version": 9,  # 9: +relevant_context (vector CP3)
+            "schema_version": 10,  # 10: +curation (OPT-4)
+            # OPT-4: curation state - structure-audit counters, the
+            # stale-fingerprint queue depth, open/proposed tasks.
+            "curation": curation,
             "top_questions": top_questions,            # PRIMARY (3f.5)
             "top_projects": top_projects,
             "recent_decisions": self._core.recent_decisions(limit=decisions_n),

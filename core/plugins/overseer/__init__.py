@@ -1349,12 +1349,46 @@ class OverseerPlugin(Plugin):
         row["models_used"] = _safe_json_loads(row.pop("models_used_json", "{}"), {})
         return {"ok": True, "summary": row}
 
+    def _canonical_and_names(self, project):
+        """OPT-4: resolve a request-supplied project string to its
+        canonical tag plus alias group, mirroring the loop's
+        canonical-keyed grouping. Without this, a manual refresh for
+        an observed variant computes stats over that single name,
+        wiping the canonical row's aggregates and stamping a
+        duplicate row key (review finding, 2026-07-26). Canonical tag
+        always wins, same precedence as the core's
+        resolve_project_tag; degrades to identity when the core
+        handle or alias table is unavailable."""
+        canonical = project
+        names = [project]
+        cm = self.core_memory
+        if cm is None:
+            return canonical, names
+        try:
+            hit = cm.query(
+                "SELECT tag FROM projects WHERE tag = ?", (project,))
+            if not hit:
+                alias = cm.query(
+                    "SELECT project_tag FROM project_aliases "
+                    "WHERE alias = ?", (project,))
+                if alias:
+                    canonical = alias[0]["project_tag"]
+            aliases = cm.query(
+                "SELECT alias FROM project_aliases "
+                "WHERE project_tag = ?", (canonical,))
+            names = sorted({canonical} | {
+                a["alias"] for a in aliases if a.get("alias")})
+        except Exception:
+            canonical, names = project, [project]
+        return canonical, names
+
     def _http_refresh_project_summary(self, payload):
         """POST /plugins/overseer/projects/summary/refresh
 
         Body: {"project": "<name>"}. Recomputes stats from
         imported_sessions + each row's metadata_json (extended stats
-        from the backfill). Cheap - no LLM.
+        from the backfill). Cheap - no LLM. OPT-4: refreshes the
+        CANONICAL row over the full alias group.
         """
         if self.overseer_db is None:
             return {"ok": False, "error": "overseer not initialized"}
@@ -1362,7 +1396,9 @@ class OverseerPlugin(Plugin):
         if not project:
             return {"ok": False, "error": "project body required"}
         try:
-            return project_summary.refresh_summary(self.overseer_db, project)
+            canonical, names = self._canonical_and_names(project)
+            return project_summary.refresh_summary(
+                self.overseer_db, canonical, names=names)
         except Exception as e:
             log.exception("refresh_project_summary failed")
             return {"ok": False, "error": "refresh failed: " + str(e)}
@@ -1378,7 +1414,8 @@ class OverseerPlugin(Plugin):
         if self.overseer_db is None:
             return {"ok": False, "error": "overseer not initialized"}
         try:
-            return project_summary.refresh_all_summaries(self.overseer_db)
+            return project_summary.refresh_all_summaries(
+                self.overseer_db, core=self.core_memory)
         except Exception as e:
             log.exception("refresh_all_project_summaries failed")
             return {"ok": False, "error": "refresh-all failed: " + str(e)}
@@ -1415,9 +1452,14 @@ class OverseerPlugin(Plugin):
             project_narrative.DEFAULT_MAX_COST_USD_PER_CALL,
         ))
 
+        # OPT-4: key everything on the canonical tag so the regen and
+        # the fingerprint stamp land on the row the loop maintains.
+        project, names = self._canonical_and_names(project)
+
         # Refresh stats first so we work with current numbers.
         try:
-            project_summary.refresh_summary(self.overseer_db, project)
+            project_summary.refresh_summary(
+                self.overseer_db, project, names=names)
         except Exception as e:
             log.exception("stats refresh failed for %s", project)
             return {"ok": False, "error": "stats refresh failed: " + str(e)}
@@ -1461,6 +1503,7 @@ class OverseerPlugin(Plugin):
                 narrative_text=gen["narrative"],
                 cost_usd=gen.get("cost_usd", 0.0),
                 session_count_at_update=row.get("session_count", 0),
+                core=self.core_memory,
             )
         except Exception as e:
             log.exception("apply_narrative failed for %s", project)
