@@ -89,6 +89,9 @@ mcp = FastMCP(
         "Pillars (structured, first-class):\n"
         f"- cortex_projects_list / cortex_project_get: what {_OWNER} is working on, "
         "with the Overseer's rollup stats.\n"
+        "- cortex_orgs_list / cortex_org_get: the organization layer that "
+        "groups projects (companies and thematic groups); org_tag on a "
+        "project names its organization.\n"
         f"- cortex_rules_list: {_OWNER}'s standing tech rules (hard-won engineering "
         "defaults). Read these before advising on their stack.\n"
         "- cortex_skills_list / cortex_skill_get: their tech-skills portfolio.\n"
@@ -239,6 +242,26 @@ def cortex_project_get(tag: str) -> dict[str, Any]:
     """Full detail for one project by its tag, plus the Overseer's numeric
     rollup stats (sessions, active minutes, cost) when available. Read-only."""
     return pillars_service.project_get(_principal(), tag)
+
+
+@mcp.tool(title="List Cortex organizations",
+          annotations=ToolAnnotations(title="List Cortex organizations",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_orgs_list() -> dict[str, Any]:
+    """List the owner's organizations (companies and thematic groups that
+    group projects): tag, name, org_type, member project count, plus the
+    count of still-untriaged projects. Read-only."""
+    return pillars_service.orgs_list(_principal())
+
+
+@mcp.tool(title="Get a Cortex organization",
+          annotations=ToolAnnotations(title="Get a Cortex organization",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_org_get(tag: str) -> dict[str, Any]:
+    """One organization by tag, with its member projects. Read-only."""
+    return pillars_service.org_get(_principal(), tag)
 
 
 @mcp.tool(title="List Cortex tech rules",

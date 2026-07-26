@@ -15,6 +15,7 @@ All timestamps are ISO 8601 UTC via SQLite datetime('now').
 """
 
 import json
+import os
 import sqlite3
 import uuid
 
@@ -196,6 +197,7 @@ class CortexDB:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA_SQL)
+        self._migrate_opt2_orgs()
         self._conn.commit()
         # Slice 9.4.1 (2026-05-16): every timestamp column gets a
         # paired local_<col>_at (ISO with explicit offset) populated
@@ -321,18 +323,34 @@ class CortexDB:
 
     # --- Organizations ---
 
-    def upsert_org(self, tag, name="", org_type="", my_role="",
-                   is_active=1, notes=""):
+    # upsert_org was removed in OPT-2 (2026-07-26): zero callers, and org
+    # writes go through the generic upsert_row contract like every other
+    # whitelisted table.
+
+    def _migrate_opt2_orgs(self):
+        """OPT-2: wake the dormant org layer. Adds the default-bucket,
+        business-tracker-hedge, and ordering columns (CREATE TABLE IF NOT
+        EXISTS never retrofits), then guarantees the 'unsorted' bucket
+        row. org_tag='' stays UNTRIAGED (nobody decided); 'unsorted'
+        means TRIAGED, deliberately parked."""
+        for col, decl in (("is_default", "INTEGER DEFAULT 0"),
+                          ("external_ref", "TEXT DEFAULT ''"),
+                          ("sort_order", "INTEGER DEFAULT 0")):
+            try:
+                self._conn.execute(
+                    "ALTER TABLE organizations ADD COLUMN {} {}".format(
+                        col, decl))
+            except Exception:
+                pass  # column already exists
         self._conn.execute(
-            "INSERT INTO organizations (tag, name, org_type, my_role, "
-            "is_active, notes) VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(tag) DO UPDATE SET name=excluded.name, "
-            "org_type=excluded.org_type, my_role=excluded.my_role, "
-            "is_active=excluded.is_active, notes=excluded.notes",
-            (tag, name, org_type, my_role, is_active, notes),
-        )
+            "INSERT OR IGNORE INTO organizations "
+            "(tag, name, org_type, is_default, sort_order) "
+            "VALUES ('unsorted', 'Unsorted', 'thematic', 1, 999)")
         self._conn.commit()
-        return tag
+
+    def valid_org_tags(self):
+        return [r[0] for r in self._conn.execute(
+            "SELECT tag FROM organizations ORDER BY sort_order, tag")]
 
     def get_organizations(self):
         rows = self._conn.execute(
@@ -649,6 +667,17 @@ class CortexDB:
                     "tag '{}' is an alias of project '{}'; use the "
                     "canonical tag or remove the alias first".format(
                         data["tag"], shadow[0]))
+
+        # OPT-2 hierarchy guard: a non-empty org_tag must name a real
+        # organization ('' stays allowed = untriaged). Kill switch:
+        # CORTEX_ORG_VALIDATE=0 restores the old accept-anything path.
+        if (table == "projects" and data.get("org_tag")
+                and os.environ.get("CORTEX_ORG_VALIDATE", "1") != "0"):
+            valid = self.valid_org_tags()
+            if data["org_tag"] not in valid:
+                raise ValueError(
+                    "unknown org_tag '{}'; valid organizations: {}".format(
+                        data["org_tag"], ", ".join(valid)))
 
         # No PK supplied on an auto-PK table → straight INSERT.
         if info["auto_pk"] and pk not in data:

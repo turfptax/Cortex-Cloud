@@ -55,7 +55,7 @@ def _cap(limit, default: int = 40, ceiling: int = 200) -> int:
 # ── Projects (cortex.projects + overseer.project_summaries) ───────────
 
 _PROJECT_LIST_FIELDS = ("tag", "name", "status", "priority", "category",
-                        "total_hours", "last_touched")
+                        "org_tag", "total_hours", "last_touched")
 # `collaborators` is intentionally NOT exposed: it is a structured list of
 # third-party names, i.e. People-pillar data, and People is owner-only.
 _PROJECT_DETAIL_FIELDS = _PROJECT_LIST_FIELDS + (
@@ -139,6 +139,75 @@ def project_get(principal: Principal, tag: str) -> dict:
             project["summary"] = {k: s.get(k) for k in _SUMMARY_FIELDS
                                   if k in s}
     return {"ok": True, "project": project}
+
+
+# ── Organizations (cortex.organizations, OPT-2) ───────────────────────
+
+_ORG_FIELDS = ("tag", "name", "org_type", "my_role", "is_active",
+               "is_default", "sort_order")
+
+
+def orgs_list(principal: Principal) -> dict:
+    """The org layer of the hierarchy, with per-org member counts and the
+    untriaged count (projects whose org_tag is still ''). Read-only."""
+    if not db.has_table("organizations"):
+        return {"ok": True, "organizations": [], "total": 0, "untriaged": 0}
+    try:
+        rows = db.fetchall(
+            "SELECT * FROM organizations ORDER BY sort_order, tag")
+        counts = {r.get("org_tag") or "": r.get("n") for r in db.fetchall(
+            "SELECT org_tag, COUNT(*) AS n FROM projects GROUP BY org_tag")}
+    except Exception as e:
+        log.warning("orgs_list read failed: %s", e)
+        return {"ok": False, "error": "read failed"}
+    out = []
+    for r in rows:
+        if not _visible(principal, "organizations", r):
+            continue
+        corpus_service.record_pull("organizations", r.get("tag"),
+                                   "mcp:cortex_orgs_list", "",
+                                   _caller(principal),
+                                   caller_class=_class(principal))
+        org = {k: r.get(k) for k in _ORG_FIELDS if k in r}
+        org["project_count"] = counts.get(r.get("tag"), 0)
+        out.append(org)
+    return {"ok": True, "organizations": out, "total": len(out),
+            "untriaged": counts.get("", 0)}
+
+
+def org_get(principal: Principal, tag: str) -> dict:
+    """One organization plus its member projects. Read-only."""
+    tag = (tag or "").strip()
+    if not tag:
+        return {"ok": False, "error": "tag is required"}
+    if not db.has_table("organizations"):
+        return {"ok": False, "error": "not found", "tag": tag}
+    try:
+        row = db.fetchone("SELECT * FROM organizations WHERE tag = :t",
+                          {"t": tag})
+    except Exception as e:
+        log.warning("org_get read failed: %s", e)
+        return {"ok": False, "error": "read failed"}
+    if not row or not _visible(principal, "organizations", row):
+        return {"ok": False, "error": "not found", "tag": tag}
+    corpus_service.record_pull("organizations", tag, "mcp:cortex_org_get",
+                               tag, _caller(principal),
+                               caller_class=_class(principal))
+    org = {k: row.get(k) for k in _ORG_FIELDS if k in row}
+    members = []
+    try:
+        prows = db.fetchall(
+            "SELECT * FROM projects WHERE org_tag = :t "
+            "ORDER BY last_touched DESC", {"t": tag})
+        for p in prows:
+            if _visible(principal, "projects", p):
+                members.append(
+                    {k: p.get(k) for k in _PROJECT_LIST_FIELDS if k in p})
+    except Exception:
+        pass
+    org["projects"] = members
+    org["project_count"] = len(members)
+    return {"ok": True, "organization": org}
 
 
 # ── Rules (overseer.tech_rules) ───────────────────────────────────────
