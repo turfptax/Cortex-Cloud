@@ -367,7 +367,7 @@ def generate_narrative(*, db, llm, project, stats, max_cost_usd=None,
 
 
 def apply_narrative(*, db, project, narrative_text, cost_usd,
-                    session_count_at_update):
+                    session_count_at_update, core=None):
     """Persist a generated narrative onto project_summaries. Caller
     passes the session_count it observed when generating, so the
     next regen-trigger check has the right baseline to compare
@@ -375,7 +375,15 @@ def apply_narrative(*, db, project, narrative_text, cost_usd,
 
     Stores narrative_cost_usd as the most-recent cost (NOT cumulative
  - a cumulative column gets messy fast and the per-row LLM call log
-    in llm_calls already has the audit trail)."""
+    in llm_calls already has the audit trail).
+
+    OPT-4 (R6): also stamps the child fingerprint and clears the
+    stale flag with the narrative. The stamp lives HERE, in the
+    shared generator, so loop regens and manual routes both stay
+    coherent with the loop's compare-only fingerprint pass and a
+    manual regen never re-flags. `core` is the read-only core handle;
+    task rows contribute to the fingerprint only when it is provided,
+    so every call site passes it."""
     db.upsert_project_summary(
         project=project,
         narrative=narrative_text,
@@ -383,6 +391,11 @@ def apply_narrative(*, db, project, narrative_text, cost_usd,
         narrative_session_count_at_update=int(session_count_at_update or 0),
         narrative_cost_usd=round(float(cost_usd or 0.0), 4),
     )
+    try:
+        import curator
+        curator.stamp_fingerprint(db, project, core=core)
+    except Exception as e:
+        log.warning("fingerprint stamp failed for %s: %s", project, e)
 
 
 def needs_regen(*, summary_row, now_iso=None,
