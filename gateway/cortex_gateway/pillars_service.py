@@ -28,7 +28,12 @@ log = logging.getLogger("cortex_gateway.pillars")
 
 
 def _caller(p: Principal) -> str:
-    return f"token:{p.id}:{p.name}"
+    # OPT-0: durable classified identity, shared with the corpus surface.
+    return corpus_service.caller_identity(p)[0]
+
+
+def _class(p: Principal) -> str:
+    return corpus_service.caller_identity(p)[1]
 
 
 def _visible(principal: Principal, table: str, row: dict) -> bool:
@@ -88,7 +93,8 @@ def projects_list(principal: Principal, *, status: str = "",
         # no-ops (record_pull swallows it); the read itself never fails.
         corpus_service.record_pull("projects", r.get("tag"),
                                    "mcp:cortex_projects_list", status or "",
-                                   _caller(principal))
+                                   _caller(principal),
+                                   caller_class=_class(principal))
         out.append({k: r.get(k) for k in _PROJECT_LIST_FIELDS if k in r})
     return {"ok": True, "projects": out, "total": len(out)}
 
@@ -107,7 +113,8 @@ def project_get(principal: Principal, tag: str) -> dict:
     if not row or not _visible(principal, "projects", row):
         return {"ok": False, "error": "not found", "tag": tag}
     corpus_service.record_pull("projects", tag, "mcp:cortex_project_get", tag,
-                               _caller(principal))
+                               _caller(principal),
+                               caller_class=_class(principal))
     project = {k: row.get(k) for k in _PROJECT_DETAIL_FIELDS if k in row}
     # Overseer rollup enrichment (interpretive; gate it the same way).
     if db.has_table("project_summaries"):
@@ -153,7 +160,8 @@ def rules_list(principal: Principal, *, status: str = "active",
             continue
         corpus_service.record_pull("tech_rules", r.get("id"),
                                    "mcp:cortex_rules_list", stack or "",
-                                   _caller(principal))
+                                   _caller(principal),
+                                   caller_class=_class(principal))
         out.append({k: r.get(k) for k in _RULE_FIELDS if k in r})
     return {"ok": True, "rules": out, "total": len(out)}
 
@@ -180,7 +188,8 @@ def skills_list(principal: Principal, *, limit: int = 40) -> dict:
             continue
         corpus_service.record_pull("tech_skills", r.get("id"),
                                    "mcp:cortex_skills_list", "",
-                                   _caller(principal))
+                                   _caller(principal),
+                                   caller_class=_class(principal))
         out.append({k: r.get(k) for k in _SKILL_FIELDS if k in r})
     return {"ok": True, "skills": out, "total": len(out)}
 
@@ -201,7 +210,9 @@ def skill_get(principal: Principal, name: str) -> dict:
     if not row or not _visible(principal, "tech_skills", row):
         return {"ok": False, "error": "not found", "name": name}
     corpus_service.record_pull("tech_skills", row.get("id"),
-                               "mcp:cortex_skill_get", name, _caller(principal))
+                               "mcp:cortex_skill_get", name,
+                               _caller(principal),
+                               caller_class=_class(principal))
     skill = {k: row.get(k) for k in _SKILL_FIELDS if k in row}
     entries = []
     if db.has_table("tech_skill_log"):

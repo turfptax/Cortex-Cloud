@@ -635,6 +635,11 @@ class OverseerPlugin(Plugin):
                   self._http_vector_status),
             Route("POST", "/vector/backfill",
                   self._http_vector_backfill),
+            # ── OPT-0 (2026-07-26): one-time deterministic backfill
+            #    of summaries_gist.project_tag from imported_sessions
+            #    + rollup labels, so pulls attribute to projects.
+            Route("POST", "/gists/backfill-project-tags",
+                  self._http_backfill_gist_project_tags),
             Route("POST", "/vector/search",
                   self._http_vector_search),
         ]
@@ -2993,6 +2998,22 @@ class OverseerPlugin(Plugin):
         if self.overseer_db is None:
             return {"ok": False, "error": "overseer not initialized"}
         return {"ok": True, **self.overseer_db.vector_status()}
+
+    def _http_backfill_gist_project_tags(self, payload):
+        """POST /plugins/overseer/gists/backfill-project-tags
+
+        OPT-0 one-time deterministic backfill: stamps project_tag on
+        existing import gists (via imported_sessions join) and rollup
+        gists (from the rollup:<project>:<date> label). Idempotent:
+        only rows still '' are touched. No LLM calls."""
+        db = self.overseer_db
+        if db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        try:
+            result = db.backfill_gist_project_tags()
+            return {"ok": True, **result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _http_vector_backfill(self, payload):
         """POST /plugins/overseer/vector/backfill
