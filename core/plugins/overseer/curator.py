@@ -377,6 +377,83 @@ def run_task_extraction(*, core, db, llm, cfg, budget, summary: dict,
         summary["task_extract_failed"] = failed
 
 
+# == Response apply (Step 1b.3, OPT-5 accept path) ======================
+
+
+CURATOR_RULES = ("curator_org_proposal", "curator_merge_proposal")
+
+
+def run_apply_responses(*, db, summary: dict, upsert, core_cmd) -> None:
+    """OPT-5: apply the owner's Bell decisions on curator proposals.
+
+    Reads unprocessed notification_responses for the curator rules
+    and applies accepts through the core's public write contract:
+      - org_assign: partial projects update setting org_tag.
+      - merge_apply: CMD merge_project with an EXPLICIT winner/loser
+        in the payload. A merge_review click alone never merges;
+        direction must be stated, per the propose-then-accept terms.
+      - reject / merge_review / anything else: acknowledged, no write.
+
+    Only curator-rule responses are marked processed here; responses
+    for every other rule stay queued for the journal step, their
+    existing consumer. Failed applies are still dequeued (the click
+    was seen; retrying a bad payload every tick would wedge the
+    queue) and surfaced in the tick summary."""
+    try:
+        pending = db.list_pending_notification_responses(limit=50)
+    except Exception as e:
+        summary["errors"].append("apply_responses: " + str(e)[:200])
+        return
+    handled = []
+    applied_orgs = 0
+    applied_merges = 0
+    acknowledged = 0
+    failed = 0
+    for r in pending:
+        if r.get("rule_name") not in CURATOR_RULES:
+            continue
+        kind = (r.get("action_kind") or "").strip()
+        payload = r.get("response_payload") or {}
+        ok = True
+        if kind == "org_assign":
+            ptag = (payload.get("project_tag") or "").strip()
+            org = (payload.get("org_tag") or "").strip()
+            if ptag and org:
+                out = upsert("projects", {"tag": ptag, "org_tag": org})
+                ok = bool(out.get("ok"))
+                if ok:
+                    applied_orgs += 1
+            else:
+                ok = False
+        elif kind == "merge_apply":
+            loser = (payload.get("loser") or "").strip()
+            winner = (payload.get("winner") or "").strip()
+            if loser and winner:
+                out = core_cmd("merge_project",
+                               {"loser": loser, "winner": winner})
+                ok = bool(out.get("ok"))
+                if ok:
+                    applied_merges += 1
+            else:
+                ok = False
+        else:
+            acknowledged += 1
+        if not ok:
+            failed += 1
+        handled.append(r["id"])
+    if handled:
+        try:
+            db.mark_notification_responses_processed(
+                response_ids=handled)
+        except Exception as e:
+            summary["errors"].append(
+                "apply_responses_mark: " + str(e)[:200])
+        summary["curator_responses_applied"] = {
+            "handled": len(handled), "org_assigns": applied_orgs,
+            "merges": applied_merges, "acknowledged": acknowledged,
+            "failed": failed}
+
+
 # == Structure audit (Step 1b.5) ========================================
 
 

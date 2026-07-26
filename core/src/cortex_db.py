@@ -698,6 +698,110 @@ class CortexDB:
                 "skipped_no_project": skipped_no_project,
                 "skipped": skipped[:20]}
 
+    def merge_project(self, loser, winner):
+        """OPT-5: merge one project into another (owner-directed).
+
+        The loser's tag is rewritten across every relational consumer
+        in the OPT-1 join inventory, plus activities and files, which
+        the inventory missed (gap noted 2026-07-26). The loser tag is
+        then recorded as an alias of the winner (source='merged'), the
+        loser's own aliases re-point to the winner, the winner absorbs
+        hours/latest-touch and fills its empty fields from the loser,
+        and the loser's projects row is removed. One transaction: all
+        or nothing.
+
+        Interpretive readers (gists, imported_sessions, summaries)
+        alias-resolve through the new alias row, so no overseer-side
+        rewrite is needed."""
+        loser = (loser or "").strip()
+        winner = (winner or "").strip()
+        if not loser or not winner:
+            raise ValueError("loser and winner tags required")
+        if loser == winner:
+            raise ValueError("loser and winner must differ")
+        cur = self._conn
+        lrow = cur.execute("SELECT * FROM projects WHERE tag = ?",
+                           (loser,)).fetchone()
+        wrow = cur.execute("SELECT * FROM projects WHERE tag = ?",
+                           (winner,)).fetchone()
+        if not lrow:
+            raise ValueError("unknown loser project '{}'".format(loser))
+        if not wrow:
+            raise ValueError("unknown winner project '{}'".format(winner))
+        report = {"loser": loser, "winner": winner, "rewritten": {}}
+        try:
+            for table, col in (("notes", "project"),
+                               ("searches", "project"),
+                               ("activities", "project"),
+                               ("files", "project"),
+                               ("time_entries", "project_tag"),
+                               ("tasks", "project_tag")):
+                c = cur.execute(
+                    "UPDATE {t} SET {c} = ? WHERE {c} = ?".format(
+                        t=table, c=col), (winner, loser))
+                report["rewritten"][table] = c.rowcount
+            # sessions.projects is a comma list; rewrite list-aware so
+            # 'a,loser,b' becomes 'a,winner,b' (deduped) and a tag that
+            # merely CONTAINS the loser string is never touched.
+            n_sessions = 0
+            for s in cur.execute(
+                    "SELECT id, projects FROM sessions "
+                    "WHERE projects LIKE ?",
+                    ("%" + loser + "%",)).fetchall():
+                parts = [p.strip() for p in (s["projects"] or "").split(",")
+                         if p.strip()]
+                if loser not in parts:
+                    continue
+                new = []
+                for p in parts:
+                    q = winner if p == loser else p
+                    if q not in new:
+                        new.append(q)
+                cur.execute(
+                    "UPDATE sessions SET projects = ? WHERE id = ?",
+                    (",".join(new), s["id"]))
+                n_sessions += 1
+            report["rewritten"]["sessions"] = n_sessions
+            # Aliases: re-point the loser's own aliases, then record
+            # the loser tag itself as an alias of the winner.
+            c = cur.execute(
+                "UPDATE project_aliases SET project_tag = ? "
+                "WHERE project_tag = ?", (winner, loser))
+            report["aliases_repointed"] = c.rowcount
+            cur.execute(
+                "INSERT OR REPLACE INTO project_aliases "
+                "(alias, project_tag, source) VALUES (?, ?, 'merged')",
+                (loser, winner))
+            # Winner absorbs: hours sum, latest touch, fill-empty.
+            l, w = dict(lrow), dict(wrow)
+            fills = {}
+            for k in ("name", "description", "github_url", "category"):
+                if (not (w.get(k) or "").strip()
+                        and (l.get(k) or "").strip()):
+                    fills[k] = l[k]
+            new_hours = (float(w.get("total_hours") or 0)
+                         + float(l.get("total_hours") or 0))
+            last = max((w.get("last_touched") or ""),
+                       (l.get("last_touched") or ""))
+            sets = ["total_hours = ?", "last_touched = ?"]
+            params = [new_hours, last]
+            for k, v in fills.items():
+                sets.append("{} = ?".format(k))
+                params.append(v)
+            params.append(winner)
+            cur.execute(
+                "UPDATE projects SET {} WHERE tag = ?".format(
+                    ", ".join(sets)), params)
+            report["winner_hours"] = round(new_hours, 2)
+            if fills:
+                report["fields_filled"] = sorted(fills)
+            cur.execute("DELETE FROM projects WHERE tag = ?", (loser,))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return report
+
     # ── OPT-1: canonical project identity ─────────────────────────
 
     @staticmethod

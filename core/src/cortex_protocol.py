@@ -188,6 +188,7 @@ class CortexProtocol:
             "upsert": self._cmd_upsert,
             "seed_project_aliases": self._cmd_seed_project_aliases,
             "migrate_reminders_to_tasks": self._cmd_migrate_reminders,
+            "merge_project": self._cmd_merge_project,
             "delete": self._cmd_delete,
             "table_counts": self._cmd_table_counts,
         }
@@ -463,6 +464,21 @@ class CortexProtocol:
         return "RSP:query:" + json.dumps(results, separators=(",", ":"), default=str)
 
     # --- Generic CRUD ---
+
+    def _cmd_merge_project(self, payload, context):
+        """OPT-5: merge one project into another. Rewrites the
+        relational join inventory, records the loser as an alias of
+        the winner, and removes the loser's row. Owner-directed or
+        applied by the loop's response step from an explicit
+        merge_apply Bell decision; never fired autonomously."""
+        data = json.loads(payload) if payload else {}
+        try:
+            report = self._db.merge_project(
+                data.get("loser"), data.get("winner"))
+        except ValueError as e:
+            return "ERR:merge_project:" + str(e)
+        return "RSP:merge_project:" + json.dumps(
+            report, separators=(",", ":"), default=str)
 
     def _cmd_migrate_reminders(self, payload, context):
         """OPT-3: one-time reminder-notes -> tasks migration (idempotent;
