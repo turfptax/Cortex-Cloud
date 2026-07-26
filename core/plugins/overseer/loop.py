@@ -511,6 +511,23 @@ class OverseerLoop:
                 self._log.exception("auto-classify failed: %s", e)
                 summary["errors"].append("classify: " + str(e)[:200])
 
+        # Step 1b.3 (OPT-5): apply the owner's Bell decisions on
+        # curator proposals (org accepts, explicit merge directions).
+        # Zero LLM; every write runs through the public write
+        # contract. Runs before the audit so this tick's counters
+        # already reflect what the owner just decided.
+        if self._cfg.get("loop_apply_responses", True):
+            try:
+                curator.run_apply_responses(
+                    db=self._db, summary=summary,
+                    upsert=self._core_upsert,
+                    core_cmd=self._core_cmd)
+            except Exception as e:
+                self._log.exception(
+                    "apply-responses step failed: %s", e)
+                summary["errors"].append(
+                    "apply_responses: " + str(e)[:200])
+
         # Step 1b.5 (OPT-4): structure audit. Deterministic hierarchy
         # counters every tick (zero LLM); the gated LLM half proposes
         # org placements and runs the folded merge check as a
@@ -1390,14 +1407,14 @@ class OverseerLoop:
         self._db.set_overseer_state(self.NOTES_MARK_KEY, anchor)
         return anchor
 
-    def _core_upsert(self, table, data):
-        """OPT-4 write path: write one row to cortex.db through the
-        local core API. Generalizes the _writeback_note_tags
-        precedent: the overseer's direct core handle is read-only by
-        design (plugin.toml core_memory_write=false stands); the HTTP
-        upsert is the public write contract and runs the core's guard
-        rails (task status vocabulary, project existence, uuid
-        idempotency). Returns {ok, id?, error?}; never raises."""
+    def _core_cmd(self, command, payload):
+        """POST one command to the local core API and parse the
+        RSP:<command>: envelope. OPT-5 generalization of the OPT-4
+        _core_upsert precedent so loop steps can reach guarded
+        commands (merge_project) too; the overseer's direct core
+        handle stays read-only (core_memory_write=false stands) and
+        every write runs the core's guard rails. Returns
+        {ok, data|error}; never raises."""
         import base64
         import urllib.request
         try:
@@ -1406,8 +1423,7 @@ class OverseerLoop:
             except ImportError:
                 HTTP_USERNAME, HTTP_PASSWORD = "cortex", "cortex"
             body = json.dumps({
-                "command": "upsert",
-                "payload": {"table": table, "data": data},
+                "command": command, "payload": payload,
             }).encode("utf-8")
             auth = base64.b64encode("{}:{}".format(
                 HTTP_USERNAME, HTTP_PASSWORD).encode()).decode()
@@ -1416,17 +1432,25 @@ class OverseerLoop:
                 headers={"Content-Type": "application/json",
                          "Authorization": "Basic " + auth},
                 method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 raw = resp.read().decode("utf-8", "replace")
-            payload = json.loads(raw)
-            response = str(payload.get("response") or "")
-            if response.startswith("RSP:upsert:"):
-                out = json.loads(response[len("RSP:upsert:"):])
-                return {"ok": True, "id": out.get("id")}
+            response = str(json.loads(raw).get("response") or "")
+            prefix = "RSP:{}:".format(command)
+            if response.startswith(prefix):
+                return {"ok": True,
+                        "data": json.loads(response[len(prefix):])}
             return {"ok": False, "error": response[:300]}
         except Exception as e:
-            self._log.warning("core upsert failed for %s: %s", table, e)
+            self._log.warning("core cmd %s failed: %s", command, e)
             return {"ok": False, "error": str(e)[:300]}
+
+    def _core_upsert(self, table, data):
+        """OPT-4 write path: one row into cortex.db through the core's
+        public upsert contract. Returns {ok, id?, error?}."""
+        out = self._core_cmd("upsert", {"table": table, "data": data})
+        if out.get("ok"):
+            return {"ok": True, "id": (out.get("data") or {}).get("id")}
+        return out
 
     def _writeback_note_tags(self, note_id, tags):
         """Write tags to cortex.db's notes.tags column via the local

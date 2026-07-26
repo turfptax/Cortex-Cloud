@@ -420,6 +420,12 @@ loop_audit_classify_per_tick = 10
 loop_audit_merge_checks_per_tick = 2
 loop_audit_max_cost_usd = 0.05
 
+# OPT-5: apply owner Bell decisions on curator proposals (org accepts
+# and explicit merge_apply directions) through the public write
+# contract. Proposals still never auto-apply; this step only executes
+# what the owner clicked.
+loop_apply_responses = true
+
 # Import step reserve (folds task #14): the import drain stops before
 # the last N call slots so downstream steps (task extraction,
 # journal, distill) are never starved by a big backlog.
