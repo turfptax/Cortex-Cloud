@@ -107,6 +107,18 @@ def project_get(principal: Principal, tag: str) -> dict:
         return {"ok": False, "error": "not found", "tag": tag}
     try:
         row = db.fetchone("SELECT * FROM projects WHERE tag = :t", {"t": tag})
+        # OPT-1 resolution: canonical tag always wins (checked above);
+        # the alias map is consulted only on a canonical miss, so an
+        # observed name (cwd basename, merged-away tag) returns the
+        # same project as its canonical tag. Unknown stays not-found.
+        if not row and db.has_table("project_aliases"):
+            a = db.fetchone(
+                "SELECT project_tag FROM project_aliases WHERE alias = :t",
+                {"t": tag})
+            if a:
+                tag = a.get("project_tag")
+                row = db.fetchone(
+                    "SELECT * FROM projects WHERE tag = :t", {"t": tag})
     except Exception as e:
         log.warning("project_get read failed: %s", e)
         return {"ok": False, "error": "read failed"}

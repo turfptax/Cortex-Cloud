@@ -1649,18 +1649,34 @@ class OverseerLoop:
             self._log.warning("listing projects failed: %s", e)
             return
 
+        # OPT-1: resolve observed names through the alias map so summary
+        # rows key on CANONICAL tags and stats aggregate each alias
+        # group as one project. Missing map (pre-OPT-1 corpus) degrades
+        # to identity, which is the old behavior exactly.
+        alias_map = {}
+        try:
+            for r in self._core.query(
+                    "SELECT alias, project_tag FROM project_aliases"):
+                alias_map[r["alias"]] = r["project_tag"]
+        except Exception:
+            pass
+        groups: dict[str, set] = {}
+        for p in projects:
+            groups.setdefault(alias_map.get(p, p), set()).add(p)
+
         regenerated = 0
         regen_cost = 0.0
         regen_failures = 0
         # Single pass; respect per-tick cap.
-        for project in projects:
+        for project, group_names in groups.items():
             if regenerated >= max_per_tick or budget.exhausted():
                 break
 
             # Refresh deterministic stats first so the regen check
             # sees the current session_count.
             try:
-                project_summary.refresh_summary(self._db, project)
+                project_summary.refresh_summary(
+                    self._db, project, names=sorted(group_names))
             except Exception as e:
                 self._log.warning(
                     "stats refresh failed for %s: %s", project, e)

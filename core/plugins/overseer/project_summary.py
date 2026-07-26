@@ -123,7 +123,7 @@ def _parse_iso_safe(s):
         return None
 
 
-def compute_project_stats(db, project: str) -> dict:
+def compute_project_stats(db, project: str, names=None) -> dict:
     """Aggregate imported_sessions for one project into a stats dict.
 
     Returns the dict suitable to upsert directly into
@@ -137,7 +137,7 @@ def compute_project_stats(db, project: str) -> dict:
 
     Days-active counters use distinct started_at calendar dates.
     """
-    rows = db.imported_sessions_for_project(project)
+    rows = db.imported_sessions_for_project(project, names=names)
     if not rows:
         return _empty_summary()
 
@@ -318,10 +318,14 @@ def _lifespan_days(earliest_iso, latest_iso) -> int:
 # ── Public API: refresh ──────────────────────────────────────────
 
 
-def refresh_summary(db, project: str) -> dict:
+def refresh_summary(db, project: str, names=None) -> dict:
     """Recompute stats for one project and upsert to
-    project_summaries. Returns the upserted dict."""
-    stats = compute_project_stats(db, project)
+    project_summaries. Returns the upserted dict.
+
+    OPT-1: `project` is the CANONICAL tag (the summary row key);
+    `names` is its alias group so aggregation covers import rows that
+    still carry observed variants."""
+    stats = compute_project_stats(db, project, names=names)
     db.upsert_project_summary(project=project, **stats)
     return {"ok": True, "project": project, "stats": stats}
 
