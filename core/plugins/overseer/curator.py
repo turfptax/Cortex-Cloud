@@ -60,6 +60,20 @@ def _norm_tag(s: str) -> str:
     return (s or "").casefold().replace("-", "").replace("_", "").replace(" ", "")
 
 
+def _resolved_prompt(db, purpose: str, fallback: str, **fmt) -> tuple:
+    """OPT-5.5: format a library-resolved template with a constant
+    fallback. Returns (prompt, version_id); a version with broken
+    placeholders falls back and attributes to 0 so a bad edit never
+    crashes a step or claims its output."""
+    template, pvid = db.resolve_prompt(purpose, fallback)
+    try:
+        return template.format(**fmt), pvid
+    except Exception as e:
+        log.warning("prompt %s v%s broken placeholders (%s); "
+                    "using constant", purpose, pvid, e)
+        return fallback.format(**fmt), 0
+
+
 def _parse_json_array(text: str) -> list:
     """Tolerant JSON-array extraction from an LLM reply. Returns []
     on anything unparseable; conservative is correct here."""
@@ -290,7 +304,9 @@ def run_task_extraction(*, core, db, llm, cfg, budget, summary: dict,
             body = (g["body"] or "").strip().replace("\n", " ")[:500]
             lines.append("{}. [project: {}] {}".format(
                 i, g["project_tag"], body))
-        prompt = TASK_EXTRACT_PROMPT.format(gists_block="\n".join(lines))
+        prompt, pvid = _resolved_prompt(
+            db, "task-extract", TASK_EXTRACT_PROMPT,
+            gists_block="\n".join(lines))
         result = llm.complete(prompt, purpose="task-extract",
                               max_tokens=500, temperature=0.2)
         budget.charge(result)
@@ -350,6 +366,8 @@ def run_task_extraction(*, core, db, llm, cfg, budget, summary: dict,
                 "source": "overseer-extracted",
                 "source_ref": "gist:{}".format(g["id"]),
                 "created_by": "overseer",
+                # OPT-5.5: which prompt version proposed it.
+                "extract_prompt_version": pvid,
             }
             try:
                 pr = int(t.get("priority") or 0)
@@ -745,7 +763,8 @@ def run_structure_audit(*, core, db, llm, cfg, budget,
                     r["tag"], r["name"], r["category"] or "",
                     (r["description"] or "")[:160])
                 for r in batch)
-            prompt = ORG_CLASSIFY_PROMPT.format(
+            prompt, _ = _resolved_prompt(
+                db, "org-classify", ORG_CLASSIFY_PROMPT,
                 orgs_block=orgs_block, projects_block=projects_block)
             result = llm.complete(prompt, purpose="org-classify",
                                   max_tokens=700, temperature=0.2)
@@ -790,7 +809,8 @@ def run_structure_audit(*, core, db, llm, cfg, budget,
     for a, b in pairs[:merge_cap]:
         if budget.exhausted() or audit_cost >= max_cost:
             break
-        prompt = MERGE_CHECK_PROMPT.format(
+        prompt, _ = _resolved_prompt(
+            db, "merge-check", MERGE_CHECK_PROMPT,
             block_a=_merge_pair_block(core, db, a),
             block_b=_merge_pair_block(core, db, b))
         result = llm.complete(prompt, purpose="merge-check",
