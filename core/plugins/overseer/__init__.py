@@ -2736,33 +2736,24 @@ class OverseerPlugin(Plugin):
     def _http_list_sub_agents(self, payload):
         """GET /plugins/overseer/sub-agents
 
-        Returns the full sub-agent registry plus the code-side defaults
-        from B_AGENTS so the caller can see what's seeded vs what's
-        been customized.
+        Returns the full sub-agent registry. OPT-4b (2026-07-26): the
+        B_AGENTS code registry is retired, so historical B rows get a
+        generic flash default instead of a per-spec one; the rows
+        themselves stay as the tier-history record.
 
         Each row:
           agent_type, agent_name, model_tier, tier_set_at, tier_set_by,
           notes, last_model_used, last_invoked_at, invocation_count,
-          default_tier (from B_AGENTS, may differ from model_tier if
-          Tory has upgraded), available_tiers (the valid options)
+          default_tier, available_tiers (the valid options)
         """
         if self.overseer_db is None:
             return {"ok": False, "error": "overseer not initialized"}
         try:
             from llm_router import SUB_AGENT_TIER_TO_MODEL
-            import b_agents as _b_agents
             rows = self.overseer_db.list_sub_agent_tiers()
-            # Annotate each row with the code-side default for compare.
             for r in rows:
-                if r.get("agent_type") == "b":
-                    spec = _b_agents.B_AGENTS.get(r["agent_name"], {})
-                    r["default_tier"] = spec.get("default_tier", "flash")
-                    r["default_tier_rationale"] = spec.get(
-                        "default_tier_rationale", "")
-                else:
-                    # C-agents: pull from c_agents.model if present
-                    r["default_tier"] = "flash"
-                    r["default_tier_rationale"] = ""
+                r["default_tier"] = "flash"
+                r["default_tier_rationale"] = ""
                 r["current_model"] = SUB_AGENT_TIER_TO_MODEL.get(
                     r.get("model_tier", "flash"),
                     SUB_AGENT_TIER_TO_MODEL["flash"])

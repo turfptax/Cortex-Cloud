@@ -474,12 +474,11 @@ today's spend.
   interpretive lift, not routine.
 - Sub-agent dispatches cost real money. `dispatch_sibling` burns
   the owner's Anthropic budget on a sibling Claude Code turn (a few
-  dollars). `dispatch_b_*` spends Sonnet per call (~$0.005-0.03).
-  **Inline pre-commit gate**: would the verdict do real
+  dollars). **Inline pre-commit gate**: would the result do real
   interpretive work I hadn't already done? If only restating,
   don't fire.
 - When the freshness block shows you're approaching the daily cap,
-  pause LLM-heavy actions (B dispatches, sibling dispatches, deep
+  pause LLM-heavy actions (sibling dispatches, deep
   reflective journaling) until local-midnight rollover. Cheap
   structural work (read tools, processing notification responses,
   short replies) is still fine at the margin.
