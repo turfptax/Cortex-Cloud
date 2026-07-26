@@ -187,6 +187,7 @@ class CortexProtocol:
             # Generic CRUD
             "upsert": self._cmd_upsert,
             "seed_project_aliases": self._cmd_seed_project_aliases,
+            "migrate_reminders_to_tasks": self._cmd_migrate_reminders,
             "delete": self._cmd_delete,
             "table_counts": self._cmd_table_counts,
         }
@@ -417,7 +418,8 @@ class CortexProtocol:
         table = data.get("table", "")
         if table not in ("notes", "activities", "searches", "sessions",
                          "projects", "computers", "people", "files",
-                         "organizations", "time_entries",
+                         "organizations", "tasks", "project_aliases",
+                         "time_entries",
                          "training_examples", "training_ledger"):
             # NOTE: pet_state/pet_interactions live in the cortex-pet
             # sister repo's pet.db (Slice 2c2d schema move; Slice 11 plugin
@@ -461,6 +463,16 @@ class CortexProtocol:
         return "RSP:query:" + json.dumps(results, separators=(",", ":"), default=str)
 
     # --- Generic CRUD ---
+
+    def _cmd_migrate_reminders(self, payload, context):
+        """OPT-3: one-time reminder-notes -> tasks migration (idempotent;
+        original notes kept as provenance)."""
+        try:
+            report = self._db.migrate_reminders_to_tasks()
+            return "RSP:migrate_reminders_to_tasks:" + json.dumps(
+                report, separators=(",", ":"), default=str)
+        except Exception as e:
+            return "ERR:migrate_reminders_to_tasks:" + str(e)[:300]
 
     def _cmd_seed_project_aliases(self, payload, context):
         """OPT-1: deterministic alias seeding on the single writer.

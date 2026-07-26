@@ -210,6 +210,111 @@ def org_get(principal: Principal, tag: str) -> dict:
     return {"ok": True, "organization": org}
 
 
+# ── Tasks (cortex.tasks, OPT-3: the shared memory layer) ─────────────
+# FEDERATE posture (Tory 2026-07-26): the business tracker stays the
+# separate execution tool; these tasks are context any agent can read or
+# write so later agents pick it up. The overseer only curates; nothing
+# here claims or executes.
+
+_TASK_FIELDS = ("id", "uuid", "project_tag", "title", "details", "status",
+                "priority", "due_date", "proposed", "source", "created_by",
+                "external_ref", "completed_at", "created_at", "updated_at")
+
+
+def tasks_list(principal: Principal, *, project: str = "",
+               status: str = "", include_proposed: bool = False,
+               limit: int = 40) -> dict:
+    if not db.has_table("tasks"):
+        return {"ok": True, "tasks": [], "total": 0}
+    sql = "SELECT * FROM tasks"
+    wheres, params = [], {}
+    if project:
+        wheres.append("project_tag = :p")
+        params["p"] = project
+    if status:
+        wheres.append("status = :s")
+        params["s"] = status
+    if not include_proposed:
+        wheres.append("proposed = 0")
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
+    sql += " ORDER BY priority ASC, updated_at DESC LIMIT :l"
+    params["l"] = max(1, min(int(limit), 200))
+    try:
+        rows = db.fetchall(sql, params)
+    except Exception as e:
+        log.warning("tasks_list read failed: %s", e)
+        return {"ok": False, "error": "read failed"}
+    out = []
+    for r in rows:
+        if not _visible(principal, "tasks", r):
+            continue
+        corpus_service.record_pull("tasks", r.get("id"),
+                                   "mcp:cortex_tasks_list",
+                                   project or status or "",
+                                   _caller(principal),
+                                   caller_class=_class(principal),
+                                   parent_table="projects",
+                                   parent_id=r.get("project_tag"))
+        out.append({k: r.get(k) for k in _TASK_FIELDS if k in r})
+    return {"ok": True, "tasks": out, "total": len(out)}
+
+
+def task_add(principal: Principal, *, title: str, project: str,
+             details: str = "", priority: int = 3,
+             due_date: str = "") -> dict:
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
+    title, project = (title or "").strip(), (project or "").strip()
+    if not title or not project:
+        return {"ok": False, "error": "title and project are required"}
+    values = {"title": title, "project_tag": project,
+              "details": (details or "").strip(),
+              "priority": int(priority), "due_date": (due_date or "").strip(),
+              "source": "agent", "created_by": _caller(principal)}
+    try:
+        task_id = corpus_writes.upsert_task(values)
+    except CoreWriteError:
+        return {"ok": False, "error": "core unavailable for write"}
+    except Exception as e:
+        # the core's write contract rejects bad projects/status with a
+        # useful message; surface it verbatim
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "id": task_id, "title": title, "project": project}
+
+
+def task_update(principal: Principal, *, id: int = 0, uuid: str = "",
+                status: str = "", details: str = "",
+                priority: int = 0, due_date: str = "") -> dict:
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
+    if not id and not uuid:
+        return {"ok": False, "error": "id or uuid is required"}
+    values: dict = {}
+    if id:
+        values["id"] = int(id)
+    if uuid:
+        values["uuid"] = uuid.strip()
+    if status:
+        values["status"] = status.strip()
+    if details:
+        values["details"] = details.strip()
+    if priority:
+        values["priority"] = int(priority)
+    if due_date:
+        values["due_date"] = due_date.strip()
+    if set(values) <= {"id", "uuid"}:
+        return {"ok": False, "error": "nothing to update"}
+    try:
+        task_id = corpus_writes.upsert_task(values)
+    except CoreWriteError:
+        return {"ok": False, "error": "core unavailable for write"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "id": task_id or values.get("id"),
+            "updated": sorted(k for k in values if k not in ("id", "uuid"))}
+
+
 # ── Rules (overseer.tech_rules) ───────────────────────────────────────
 
 _RULE_FIELDS = ("id", "title", "rule", "stack", "situation", "status",
