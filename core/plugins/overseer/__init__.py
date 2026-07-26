@@ -484,6 +484,9 @@ class OverseerPlugin(Plugin):
             # ── Slice 4 CP1b: project narrative ──────────────────
             Route("POST", "/narrative/generate",
                   self._http_generate_project_narrative),
+            # ── OPT-6: org rollup ────────────────────────────────
+            Route("POST", "/orgs/rollup-now",
+                  self._http_org_rollup_now),
             # ── OPT-5.5: tiered prompt library ───────────────────
             Route("GET",  "/prompts",
                   self._http_list_prompts),
@@ -1426,6 +1429,45 @@ class OverseerPlugin(Plugin):
         except Exception as e:
             log.exception("refresh_all_project_summaries failed")
             return {"ok": False, "error": "refresh-all failed: " + str(e)}
+
+    # ── OPT-6: org rollup route ────────────────────────────────
+
+    def _http_org_rollup_now(self, payload):
+        """POST /plugins/overseer/orgs/rollup-now
+
+        Body: {"narratives": bool (default true), "max": int (default
+        20), "force": bool (default false, ignore the 24h floor)}.
+        Manual escape hatch, same shape as /backfill: bypasses the
+        daily budget but keeps the per-call cost cap. Used for the
+        cold start and on-demand refreshes."""
+        if (self.overseer_db is None or self.llm is None
+                or self.loop is None or self.core_memory is None):
+            return {"ok": False, "error": "overseer not fully initialized"}
+        import org_rollup
+        from loop import TickBudget
+        want_narr = payload.get("narratives", True)
+        if isinstance(want_narr, str):
+            want_narr = want_narr.lower() not in ("0", "false", "no")
+        max_n = int(payload.get("max", 20))
+        force = bool(payload.get("force", False))
+        budget = TickBudget(max_calls=max(1, max_n + 2),
+                            max_cost_usd=2.00)
+        summary = {"errors": []}
+        try:
+            org_rollup.run_org_rollup(
+                core=self.core_memory, db=self.overseer_db,
+                llm=self.llm, cfg=self.api.config or {},
+                budget=budget, summary=summary,
+                upsert=self.loop._core_upsert,
+                force_narratives=force,
+                max_narratives=(max_n if want_narr else 0))
+        except Exception as e:
+            log.exception("org rollup-now failed")
+            return {"ok": False, "error": str(e),
+                    "partial": summary}
+        summary["ok"] = not summary["errors"]
+        summary["budget"] = budget.remaining()
+        return summary
 
     # ── OPT-5.5: tiered prompt library routes ──────────────────
 

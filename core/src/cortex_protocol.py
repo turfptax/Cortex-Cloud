@@ -419,8 +419,8 @@ class CortexProtocol:
         table = data.get("table", "")
         if table not in ("notes", "activities", "searches", "sessions",
                          "projects", "computers", "people", "files",
-                         "organizations", "tasks", "project_aliases",
-                         "time_entries",
+                         "organizations", "org_summaries", "tasks",
+                         "project_aliases", "time_entries",
                          "training_examples", "training_ledger"):
             # NOTE: pet_state/pet_interactions live in the cortex-pet
             # sister repo's pet.db (Slice 2c2d schema move; Slice 11 plugin

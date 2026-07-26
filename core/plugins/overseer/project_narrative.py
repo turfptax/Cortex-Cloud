@@ -460,6 +460,36 @@ def needs_regen(*, summary_row, now_iso=None,
         hours_since, cur_sessions - last_sessions)
 
 
+def needs_regen_fingerprint(*, summary_row, now_iso=None,
+                            min_hours_between=DEFAULT_MIN_HOURS_BETWEEN_REGEN):
+    """OPT-6 gate: the R6 fingerprint queue replaces the 24h+3-session
+    trigger arithmetic. Regenerate when the narrative is missing, or
+    when the fingerprint pass flagged the row stale AND the time floor
+    has passed. Unchanged projects never regenerate."""
+    if not summary_row:
+        return False, "no summary row"
+    narrative = (summary_row.get("narrative") or "").strip()
+    if not narrative:
+        return True, "no narrative yet"
+    if not int(summary_row.get("narrative_stale") or 0):
+        return False, "fingerprint clean"
+    last = summary_row.get("narrative_updated_at")
+    if last:
+        try:
+            from datetime import datetime, timezone
+            t_then = datetime.fromisoformat(last.replace(" ", "T"))
+            if t_then.tzinfo is None:
+                t_then = t_then.replace(tzinfo=timezone.utc)
+            hours = (datetime.now(timezone.utc)
+                     - t_then).total_seconds() / 3600.0
+            if hours < min_hours_between:
+                return False, "stale but only {:.1f}h since last".format(
+                    hours)
+        except Exception:
+            pass
+    return True, "fingerprint stale past the time floor"
+
+
 def _now_iso(db) -> str:
     """SQLite-format datetime('now') so the value matches everything
     else the schema produces."""

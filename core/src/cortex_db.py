@@ -136,6 +136,27 @@ CREATE TABLE IF NOT EXISTS organizations (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- OPT-6: org-level abstraction (R5: the rollup is USER data, so it
+-- lives in cortex.db and is written over the HTTP upsert contract by
+-- the overseer's Step 8.5). Deterministic stats refresh every tick;
+-- the narrative regenerates only on fingerprint mismatch + 24h, and
+-- composes from member project narratives, never raw.
+CREATE TABLE IF NOT EXISTS org_summaries (
+    org_tag TEXT PRIMARY KEY,
+    member_count INTEGER NOT NULL DEFAULT 0,
+    active_count INTEGER NOT NULL DEFAULT 0,
+    total_hours REAL NOT NULL DEFAULT 0,
+    last_active_at TEXT DEFAULT '',
+    open_tasks INTEGER NOT NULL DEFAULT 0,
+    narrative TEXT NOT NULL DEFAULT '',
+    narrative_updated_at TEXT DEFAULT '',
+    narrative_cost_usd REAL NOT NULL DEFAULT 0,
+    narrative_prompt_version_id INTEGER NOT NULL DEFAULT 0,
+    child_fingerprint TEXT NOT NULL DEFAULT '',
+    narrative_stale INTEGER NOT NULL DEFAULT 0,
+    stats_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS time_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_tag TEXT DEFAULT '',
@@ -594,6 +615,7 @@ class CortexDB:
         "notes":              {"pk": "id",  "auto_pk": True},
         "projects":           {"pk": "tag", "auto_pk": False},
         "organizations":      {"pk": "tag", "auto_pk": False},
+        "org_summaries":      {"pk": "org_tag", "auto_pk": False},
         "tasks":              {"pk": "id",  "auto_pk": True},
         "project_aliases":    {"pk": "alias", "auto_pk": False},
         "time_entries":       {"pk": "id",  "auto_pk": True},
@@ -1014,8 +1036,8 @@ class CortexDB:
     def get_table_counts(self):
         """Return row counts for all browsable tables."""
         tables = ["notes", "activities", "searches", "sessions", "projects",
-                  "organizations", "tasks", "project_aliases",
-                  "time_entries", "computers", "people",
+                  "organizations", "org_summaries", "tasks",
+                  "project_aliases", "time_entries", "computers", "people",
                   "files", "training_examples"]
         counts = {}
         for t in tables:

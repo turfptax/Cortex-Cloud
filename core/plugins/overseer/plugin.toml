@@ -121,6 +121,10 @@ secrets_paths = [
 "task-extract"        = "google/gemini-2.5-flash"
 "org-classify"        = "google/gemini-2.5-flash"
 "merge-check"         = "google/gemini-2.5-flash"
+# OPT-6: org narratives compose from member project narratives, the
+# same synthesis altitude as temporal weeklies. Sonnet per the plan
+# (5.4); the per-call cap is loop_org_narrative_max_cost.
+"org-narrative"       = "anthropic/claude-sonnet-4.6"
 
 [hooks]
 subscribe = [
@@ -425,6 +429,20 @@ loop_audit_max_cost_usd = 0.05
 # contract. Proposals still never auto-apply; this step only executes
 # what the owner clicked.
 loop_apply_responses = true
+
+# OPT-6: org rollup (Step 8.5). Stats + fingerprint compare are free
+# and run every tick; the Sonnet narrative fires only for
+# fingerprint-stale orgs past the time floor. The default bucket
+# never gets a narrative.
+loop_org_rollup = true
+loop_org_narrative_max_per_tick = 2
+loop_org_narrative_max_cost = 0.05
+loop_org_narrative_min_hours = 24
+
+# OPT-6: the project narrative gate consumes the R6 fingerprint queue
+# (Step 8.4) instead of the legacy 24h+3-session arithmetic. Set to
+# "legacy" to roll back without a deploy.
+project_narrative_gate = "fingerprint"
 
 # Import step reserve (folds task #14): the import drain stops before
 # the last N call slots so downstream steps (task extraction,

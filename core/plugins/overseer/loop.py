@@ -59,6 +59,7 @@ from blindspots import applicable_blindspots
 from detail import make_token
 from distill_corrections import distill_uncondidated_corrections
 import curator
+import org_rollup
 import project_summary
 import project_narrative
 import temporal as T_clock
@@ -802,6 +803,23 @@ class OverseerLoop:
             except Exception as e:
                 self._log.exception("fingerprint pass failed: %s", e)
                 summary["errors"].append("fingerprint: " + str(e)[:200])
+
+        # Step 8.5 (OPT-6): org rollup. Deterministic stats +
+        # fingerprint compare for every org each tick (free, written
+        # over the HTTP upsert per R5); Sonnet narrative only for
+        # stale orgs past the 24h floor, max 2/tick, composed from
+        # member project narratives, born versioned via the prompt
+        # library. The default bucket gets stats, never a narrative.
+        if (self._cfg.get("loop_org_rollup", True)
+                and not budget.exhausted()):
+            try:
+                org_rollup.run_org_rollup(
+                    core=self._core, db=self._db, llm=self._llm,
+                    cfg=self._cfg, budget=budget, summary=summary,
+                    upsert=self._core_upsert)
+            except Exception as e:
+                self._log.exception("org rollup step failed: %s", e)
+                summary["errors"].append("org_rollup: " + str(e)[:200])
 
         # (Step 9 - temporal cadence - was here. Moved to Step 0 in
         # Slice 5.5 so time-anchored daily/weekly/monthly narratives
@@ -1793,11 +1811,19 @@ class OverseerLoop:
                 continue
 
             row = self._db.get_project_summary(project)
-            should, reason = project_narrative.needs_regen(
-                summary_row=row,
-                min_hours_between=min_hours,
-                min_new_sessions=min_new_sessions,
-            )
+            # OPT-6: the fingerprint queue is the regen trigger; the
+            # legacy 24h+3-session arithmetic stays behind the config
+            # switch for rollback only.
+            if self._cfg.get("project_narrative_gate",
+                             "fingerprint") == "fingerprint":
+                should, reason = project_narrative.needs_regen_fingerprint(
+                    summary_row=row, min_hours_between=min_hours)
+            else:
+                should, reason = project_narrative.needs_regen(
+                    summary_row=row,
+                    min_hours_between=min_hours,
+                    min_new_sessions=min_new_sessions,
+                )
             if not should:
                 continue
 
@@ -2647,6 +2673,17 @@ class OverseerLoop:
                 "SELECT COUNT(*) FROM project_summaries "
                 "WHERE narrative_stale = 1").fetchone()
             curation["stale_fingerprint_queue"] = int(stale_row[0])
+        except Exception:
+            pass
+        try:
+            # OPT-6: org digest (stats + freshness; narratives are on
+            # the Data page and the org_get surface).
+            curation["orgs"] = self._core.query(
+                "SELECT org_tag, member_count, active_count, "
+                "total_hours, open_tasks, last_active_at, "
+                "narrative_stale, narrative_updated_at "
+                "FROM org_summaries ORDER BY total_hours DESC "
+                "LIMIT 20")
         except Exception:
             pass
         try:
