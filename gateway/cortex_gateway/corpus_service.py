@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import logging
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 import sqlalchemy as sa
 
@@ -48,16 +49,56 @@ source_ip_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "cortex_source_ip", default=None)
 
 
+@lru_cache(maxsize=256)
+def _connector_handle(client_id: str) -> str:
+    """Durable handle for a connector: grant name + redirect host survive
+    the client_id churn of repeated OAuth registrations (OPT-0). Cached per
+    process; a grant rename takes effect on the next deploy/restart."""
+    g = grants.grant_for(client_id)
+    if g:
+        return "connector:{}|{}".format(g.get("name") or client_id,
+                                        g.get("redirect_host") or "")
+    return f"connector:{client_id}"
+
+
+def caller_identity(principal: Principal | None) -> tuple[str, str]:
+    """(caller_id, caller_class) for pull telemetry (OPT-0).
+
+    Every gateway row gets an EXPLICIT class; the core's empty-means-organic
+    convention is never used here because it inverts on gateway rows.
+    Classes align with the core scorer's weighting: organic-external counts
+    full; user-probe and automation are discounted.
+    """
+    if principal is None:
+        return ("", "unclassified")
+    is_connector = (principal.kind == "oauth"
+                    or "connector:read" in principal.scopes
+                    or "connector:write" in principal.scopes)
+    if is_connector:
+        return (_connector_handle(principal.client_id or principal.name),
+                "organic-external")
+    if "hub" in principal.scopes or "app" in principal.scopes:
+        return (f"owner:{principal.name}", "user-probe:owner-app")
+    if "admin" in principal.scopes:
+        return (f"admin:{principal.name}", "automation:admin")
+    return (f"token:{principal.id}:{principal.name}", "automation:token")
+
+
 def _record_pull(table: str, artifact_id, surface: str, query_text: str,
-                 caller_id: str | None) -> None:
+                 caller_id: str | None, *, caller_class: str = "",
+                 parent_table: str | None = None,
+                 parent_id=None) -> None:
     if artifact_id is None or not db.has_table("pull_events"):
         return
     cols = db.columns("pull_events")
     values = {}
     for k, v in (("artifact_table", table), ("artifact_id", artifact_id),
                  ("surface", surface), ("query_text", query_text),
-                 ("caller_id", caller_id), ("source_ip", source_ip_var.get())):
-        if k in cols:
+                 ("caller_id", caller_id), ("caller_class", caller_class),
+                 ("parent_artifact_table", parent_table),
+                 ("parent_artifact_id", parent_id),
+                 ("source_ip", source_ip_var.get())):
+        if k in cols and v is not None:
             values[k] = v
     try:
         db.insert("pull_events", values)
@@ -148,7 +189,7 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
         cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))
                   ).strftime("%Y-%m-%d %H:%M:%S")
 
-    caller = f"token:{principal.id}:{principal.name}"
+    caller, caller_class = caller_identity(principal)
     hits: list[dict] = []
     truncated = False
 
@@ -203,7 +244,8 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
             break
 
     for h in hits:
-        _record_pull(h["artifact_table"], h["artifact_id"], surface, q, caller)
+        _record_pull(h["artifact_table"], h["artifact_id"], surface, q, caller,
+                     caller_class=caller_class)
 
     abstractions, gists, raw_refs, seen = [], [], [], set()
     for h in hits:
@@ -230,7 +272,8 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
             "raw_refs": raw_refs, "total": len(hits), "truncated": truncated}
 
 
-def fetch(principal: Principal, token: str) -> dict:
+def fetch(principal: Principal, token: str,
+          surface: str = "rest:/v1/item") -> dict:
     if not token or ":" not in token:
         return {"ok": False, "error": "token must look like '<prefix>:<id>'",
                 "token": token}
@@ -251,8 +294,17 @@ def fetch(principal: Principal, token: str) -> dict:
     if not row:
         return {"ok": False, "error": "not found", "token": token, "type": label}
 
-    _record_pull(table, rid, "rest:/v1/item", token,
-                 f"token:{principal.id}:{principal.name}")
+    # OPT-0 parent stamp: a fetched gist attributes upward to its project
+    # (the abstraction one layer above), so drill-past at the
+    # summary-to-gist layer is measurable. Stateless reverse lookup; no
+    # search context needed.
+    parent_table = parent_id = None
+    if table == "summaries_gist" and row.get("project_tag"):
+        parent_table, parent_id = "projects", row.get("project_tag")
+    caller, caller_class = caller_identity(principal)
+    _record_pull(table, rid, surface, token, caller,
+                 caller_class=caller_class,
+                 parent_table=parent_table, parent_id=parent_id)
     decision = _gate_decision(principal, table, row)
     if decision != "full":
         row = _redact_row(decision, dict(row), body_cols, title_col)
@@ -269,9 +321,11 @@ _RECENT_SOURCES = [
 ]
 
 
-def recent(principal: Principal, *, days: int = 7, limit: int = 40) -> dict:
+def recent(principal: Principal, *, days: int = 7, limit: int = 40,
+           surface: str = "rest:/v1/recent") -> dict:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))
               ).strftime("%Y-%m-%d %H:%M:%S")
+    caller, caller_class = caller_identity(principal)
     items: list[dict] = []
     for table, body_col, prefix, kind in _RECENT_SOURCES:
         if not db.has_table(table):
@@ -305,10 +359,20 @@ def recent(principal: Principal, *, days: int = 7, limit: int = 40) -> dict:
                 "summary": summary,
                 "created_at": (row.get(tcol) if tcol else "") or "",
                 "gated": decision != "full",
+                "_table": table,
             })
     items.sort(key=lambda x: str(x["created_at"]), reverse=True)
-    return {"ok": True, "days": days, "total": len(items[:limit]),
-            "items": items[:limit]}
+    served = items[:limit]
+    # OPT-0: recent() was the one unlogged read surface despite being the
+    # recommended bootstrap tool; log exactly what was served.
+    for it in served:
+        _record_pull(it.pop("_table"), int(it["token"].split(":", 1)[1]),
+                     surface, f"days={days}", caller,
+                     caller_class=caller_class)
+    for it in items[limit:]:
+        it.pop("_table", None)
+    return {"ok": True, "days": days, "total": len(served),
+            "items": served}
 
 
 def ingest(principal: Principal, *, content: str, kind: str = "note",

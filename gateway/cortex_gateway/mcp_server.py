@@ -138,7 +138,7 @@ def fetch(id: str) -> dict[str, Any]:
     """Fetch the full content of one Cortex item by its token id (e.g. 'g:123',
     'q:6'). Returns the body plus linked tokens you can fetch next."""
     p = _principal()
-    payload = corpus_service.fetch(p, id)
+    payload = corpus_service.fetch(p, id, surface="mcp:fetch")
     if not payload.get("ok"):
         return {"id": id, "title": id, "text": "", "metadata": {"error": payload.get("error")}}
     primary = payload.get("primary") or {}
@@ -184,7 +184,8 @@ def cortex_read(token: str) -> dict[str, Any]:
     """Resolve a Cortex token to full content plus linked next_tokens for
     graph traversal. Tokens look like g:123 (gist), q:6 (question),
     p:44 (pattern), t:9 (theme), nar:12 (temporal narrative)."""
-    return corpus_service.fetch(_principal(), token)
+    return corpus_service.fetch(_principal(), token,
+                                surface="mcp:cortex_read")
 
 
 @mcp.tool(title="Recent Cortex activity",
@@ -194,7 +195,8 @@ def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
     """What changed in the corpus over the last N days - recent gists,
     journal entries, narratives, questions, patterns. Good for bootstrapping
     context at the start of a conversation."""
-    return corpus_service.recent(_principal(), days=days, limit=limit)
+    return corpus_service.recent(_principal(), days=days, limit=limit,
+                                 surface="mcp:cortex_recent")
 
 
 @mcp.tool(title="Ingest into Cortex",

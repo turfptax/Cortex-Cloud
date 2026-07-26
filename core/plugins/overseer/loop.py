@@ -1018,6 +1018,7 @@ class OverseerLoop:
             period_end=imp.get("ended_at"),
             confidence="med",
             tags=tags,
+            project_tag=imp.get("project") or "",
         )
 
         # Slice 3f.5 #2: route this new gist against open questions
@@ -1259,6 +1260,7 @@ class OverseerLoop:
             confidence="med",
             tags=["auto", "session-summary"]
                  + (["platform:" + platform] if platform else []),
+            project_tag=session.get("project") or "",
         )
 
         # Slice 3f.5 #2: route this new gist against open questions

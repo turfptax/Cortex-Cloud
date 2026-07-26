@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS summaries_gist (
     modality TEXT,                         -- taxonomy Modality axis (integrity pair): observation|statement|inference|hypothesis|value-judgment|external-claim|pattern
     lens TEXT,                             -- taxonomy Lens axis: comma-sep of the 6 controlled lenses, or 'none' (2026-06-13)
     axis_processed_at TEXT,                -- when the axis reprocess stamped modality+lens (NULL = not yet); resumability marker
+    project_tag TEXT DEFAULT '',           -- OPT-0: canonical project this gist belongs to ('' = none/unknown); existing installs get it via _migrate_opt0_gist_project
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (raw_pointer_id) REFERENCES raw_pointers(id),
     FOREIGN KEY (prompt_version_id) REFERENCES gist_prompts(id)
@@ -1409,6 +1410,9 @@ class OverseerDB(CortexDB):
         self._migrate_chat_threads()
         # Tech skills/rules (2026-07-12): same direct-call rule.
         self._migrate_tech_nocase()
+        # OPT-0 (2026-07-26): gists carry their project for pull
+        # attribution. Same direct-call rule.
+        self._migrate_opt0_gist_project()
         # Slice 9.4.1 (2026-05-16): every _at column gets a paired
         # local_<col>_at populated by trigger. Auto-discovers any new
         # tables added by future slices so the "time always shows
@@ -3072,9 +3076,54 @@ class OverseerDB(CortexDB):
 
     # ── summaries_gist ──────────────────────────────────────────
 
+    def _migrate_opt0_gist_project(self):
+        """OPT-0 (2026-07-26): summaries_gist.project_tag for pull
+        attribution. CREATE TABLE IF NOT EXISTS never retrofits, so
+        existing installs need the ALTER."""
+        try:
+            self._conn.execute(
+                "ALTER TABLE summaries_gist ADD COLUMN "
+                "project_tag TEXT DEFAULT ''")
+            self._safe_commit()
+        except Exception:
+            pass  # column already exists
+
+    def backfill_gist_project_tags(self):
+        """One-time OPT-0 backfill: stamp project_tag on existing
+        import gists deterministically via imported_sessions. The
+        import-gist period_label is '<source>:<id tail-12>' (loop.py
+        _summarize_one_imported), so the join reverses that. Rollup
+        gists carry 'rollup:<project>:<date>' labels and are stamped
+        from the label directly. Idempotent: only touches rows whose
+        project_tag is still ''."""
+        cur = self._conn.execute(
+            "UPDATE summaries_gist SET project_tag = COALESCE(("
+            "  SELECT i.project FROM imported_sessions i"
+            "  WHERE i.project != '' AND summaries_gist.period_label ="
+            "    i.source || ':' || CASE WHEN length(i.id) > 12"
+            "      THEN substr(i.id, -12) ELSE i.id END"
+            "), '') "
+            "WHERE project_tag = '' AND period_label LIKE '%:%' "
+            "AND period_label NOT LIKE 'rollup:%'")
+        imports_stamped = cur.rowcount
+        cur2 = self._conn.execute(
+            "UPDATE summaries_gist SET project_tag = "
+            "  substr(period_label, 8, "
+            "    length(period_label) - 18) "
+            "WHERE project_tag = '' AND period_label LIKE 'rollup:%' "
+            "AND length(period_label) > 18")
+        rollups_stamped = cur2.rowcount
+        self._safe_commit()
+        remaining = self._conn.execute(
+            "SELECT COUNT(*) FROM summaries_gist WHERE project_tag = ''"
+        ).fetchone()[0]
+        return {"imports_stamped": imports_stamped,
+                "rollups_stamped": rollups_stamped,
+                "untagged_remaining": remaining}
+
     def add_gist(self, body, *, period_label="", period_start=None,
                  period_end=None, confidence="med", raw_pointer_id=None,
-                 prompt_version_id=None, tags=None):
+                 prompt_version_id=None, tags=None, project_tag=""):
         # Phase 1d (2026-05-27): if no explicit prompt_version_id was
         # passed, auto-link to the currently-active gist_prompts row
         # so refinement-loop signals (pull_events drill-past) can
@@ -3088,10 +3137,11 @@ class OverseerDB(CortexDB):
         cur = self._conn.execute(
             "INSERT INTO summaries_gist (period_label, period_start, "
             "period_end, body, confidence, raw_pointer_id, "
-            "prompt_version_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "prompt_version_id, project_tag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (period_label, period_start, period_end, body,
              _norm_confidence(confidence), raw_pointer_id,
-             prompt_version_id),
+             prompt_version_id, project_tag or ""),
         )
         self._safe_commit()
         gid = cur.lastrowid

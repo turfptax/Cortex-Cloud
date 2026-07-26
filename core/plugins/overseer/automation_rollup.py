@@ -222,6 +222,7 @@ def generate_rollup(*, db, llm, project: str, rollup_date: str,
         confidence="med",
         tags=["auto", "automation-rollup",
               "project:{}".format(project)],
+        project_tag=project or "",
     )
 
     sample_ids = [r["id"] for r in imports[:20]]
