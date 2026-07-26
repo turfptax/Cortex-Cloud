@@ -18,6 +18,13 @@ import json
 import os
 import sqlite3
 import uuid
+from datetime import datetime, timezone
+
+
+def _utcnow_iso():
+    """UTC timestamp in the same 'YYYY-MM-DD HH:MM:SS' shape SQLite's
+    datetime('now') produces, so task rows sort uniformly."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 SCHEMA_SQL = """
@@ -91,6 +98,29 @@ CREATE TABLE IF NOT EXISTS project_aliases (
     source       TEXT DEFAULT '',    -- 'auto-exact' | 'auto-normalized' | 'overseer-proposed' | 'tory'
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid         TEXT UNIQUE NOT NULL,       -- idempotency: sync push, extraction dedup, agent retries
+    project_tag  TEXT NOT NULL,              -- validated at the write contract; tasks always live under a project
+    title        TEXT NOT NULL,
+    details      TEXT DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'open',
+                 -- open | in_progress | blocked | done | cancelled  (business-tracker parity; FEDERATE posture)
+    priority     INTEGER DEFAULT 3,          -- same 1-5 scale as projects.priority
+    due_date     TEXT DEFAULT '',            -- local date, per the local-with-tz rule
+    proposed     INTEGER NOT NULL DEFAULT 0, -- 1 = overseer-extracted, awaiting accept; excluded from open counts
+    source       TEXT NOT NULL DEFAULT 'manual',
+                 -- 'manual' | 'overseer-extracted' | 'reminder-migrated' | 'agent'
+    source_ref   TEXT DEFAULT '',            -- provenance: gist id, session id, note id
+    created_by   TEXT DEFAULT '',            -- connector handle / 'tory' / 'overseer'
+    external_ref TEXT DEFAULT '',            -- business-tracker task id hedge (federate link)
+    completed_at TEXT DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(project_tag, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_due     ON tasks(status, due_date);
 
 CREATE TABLE IF NOT EXISTS organizations (
     tag TEXT PRIMARY KEY,
@@ -547,12 +577,126 @@ class CortexDB:
         "notes":              {"pk": "id",  "auto_pk": True},
         "projects":           {"pk": "tag", "auto_pk": False},
         "organizations":      {"pk": "tag", "auto_pk": False},
+        "tasks":              {"pk": "id",  "auto_pk": True},
+        "project_aliases":    {"pk": "alias", "auto_pk": False},
         "time_entries":       {"pk": "id",  "auto_pk": True},
         "people":             {"pk": "id",  "auto_pk": False},
         "computers":          {"pk": "hostname", "auto_pk": False},
         "training_examples":  {"pk": "id",  "auto_pk": True},
         "training_ledger":    {"pk": "id",  "auto_pk": True},
     }
+
+    # ── OPT-3: task write contract ────────────────────────────────
+
+    TASK_STATUSES = ("open", "in_progress", "blocked", "done", "cancelled")
+
+    def _prep_task_write(self, data):
+        """Guards + lifecycle stamps for the tasks table (applied inside
+        upsert_row, the single write path). Creates require title +
+        project_tag; project_tag resolves through the alias map and must
+        name a real project. uuid gives idempotency: a write carrying an
+        existing uuid becomes an update of that row. Status uses the
+        business-tracker parity vocabulary; done/cancelled stamp
+        completed_at; every write bumps updated_at."""
+        if data.get("status") and data["status"] not in self.TASK_STATUSES:
+            raise ValueError(
+                "invalid status '{}'; valid: {}".format(
+                    data["status"], " | ".join(self.TASK_STATUSES)))
+        # uuid idempotency: an existing uuid routes to that row.
+        if "id" not in data and data.get("uuid"):
+            hit = self._conn.execute(
+                "SELECT id FROM tasks WHERE uuid = ?",
+                (data["uuid"],)).fetchone()
+            if hit:
+                data["id"] = hit[0]
+        creating = "id" not in data
+        if creating:
+            if not (data.get("title") or "").strip():
+                raise ValueError("task title is required")
+            ptag = (data.get("project_tag") or "").strip()
+            if not ptag:
+                raise ValueError("project_tag is required: tasks always "
+                                 "live under a project")
+            canonical = self.resolve_project_tag(ptag)
+            exists = self._conn.execute(
+                "SELECT 1 FROM projects WHERE tag = ?",
+                (canonical,)).fetchone()
+            if not exists:
+                raise ValueError(
+                    "unknown project '{}'; create the project first or "
+                    "use a known tag".format(ptag))
+            data["project_tag"] = canonical
+            data.setdefault("uuid", str(uuid.uuid4()))
+        else:
+            # Partial update: never let the key fields be blanked, and
+            # re-resolve a supplied project_tag.
+            if "project_tag" in data and data["project_tag"]:
+                data["project_tag"] = self.resolve_project_tag(
+                    data["project_tag"])
+        if data.get("status") in ("done", "cancelled") \
+                and not data.get("completed_at"):
+            data["completed_at"] = _utcnow_iso()
+        data["updated_at"] = _utcnow_iso()
+        return data
+
+    def open_tasks(self, *, limit=10):
+        """Real (non-proposed) tasks still in play, for get_context and
+        the working-memory glance. Priority 1 first, then nearest due."""
+        rows = self._conn.execute(
+            "SELECT id, uuid, project_tag, title, status, priority, "
+            "due_date, created_by FROM tasks "
+            "WHERE proposed = 0 AND status IN ('open','in_progress','blocked') "
+            "ORDER BY priority ASC, CASE WHEN due_date = '' THEN 1 ELSE 0 END, "
+            "due_date ASC LIMIT ?", (int(limit),)).fetchall()
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE proposed = 0 "
+            "AND status IN ('open','in_progress','blocked')").fetchone()[0]
+        return {"count": count,
+                "top": [dict(zip((
+                    "id", "uuid", "project_tag", "title", "status",
+                    "priority", "due_date", "created_by"), r)) for r in rows]}
+
+    def migrate_reminders_to_tasks(self):
+        """One-time OPT-3 migration: reminder notes become tasks
+        (source='reminder-migrated'; the original notes are KEPT as
+        provenance). Idempotent via uuid 'rem-<note_id>'. Reminders on
+        unknown projects land under their resolved tag when it exists,
+        else are skipped and reported (never auto-create projects)."""
+        notes = self._conn.execute(
+            "SELECT id, content, project, created_at FROM notes "
+            "WHERE note_type = 'reminder' ORDER BY id").fetchall()
+        migrated = skipped_no_project = already = 0
+        skipped = []
+        for nid, content, project, created_at in notes:
+            nuuid = "rem-{}".format(nid)
+            if self._conn.execute("SELECT 1 FROM tasks WHERE uuid = ?",
+                                  (nuuid,)).fetchone():
+                already += 1
+                continue
+            canonical = self.resolve_project_tag((project or "").strip())
+            if not canonical or not self._conn.execute(
+                    "SELECT 1 FROM projects WHERE tag = ?",
+                    (canonical,)).fetchone():
+                skipped_no_project += 1
+                skipped.append({"note_id": nid,
+                                "project": project or "",
+                                "content": (content or "")[:80]})
+                continue
+            title = (content or "").strip().splitlines()[0][:120] or "reminder"
+            self._conn.execute(
+                "INSERT INTO tasks (uuid, project_tag, title, details, "
+                "status, source, source_ref, created_by, created_at, "
+                "updated_at) VALUES (?, ?, ?, ?, 'open', "
+                "'reminder-migrated', ?, 'tory', ?, ?)",
+                (nuuid, canonical, title, (content or "").strip(),
+                 "note:{}".format(nid), created_at or _utcnow_iso(),
+                 _utcnow_iso()))
+            migrated += 1
+        self._conn.commit()
+        return {"reminder_notes": len(notes), "migrated": migrated,
+                "already_migrated": already,
+                "skipped_no_project": skipped_no_project,
+                "skipped": skipped[:20]}
 
     # ── OPT-1: canonical project identity ─────────────────────────
 
@@ -679,6 +823,11 @@ class CortexDB:
                     "unknown org_tag '{}'; valid organizations: {}".format(
                         data["org_tag"], ", ".join(valid)))
 
+        # OPT-3 task contract (tasks are a shared MEMORY layer, federate
+        # posture: the business tracker stays the execution tool).
+        if table == "tasks":
+            data = self._prep_task_write(dict(data))
+
         # No PK supplied on an auto-PK table → straight INSERT.
         if info["auto_pk"] and pk not in data:
             cols = [k for k in data.keys() if k.replace("_", "").isalnum()]
@@ -744,7 +893,8 @@ class CortexDB:
     def get_table_counts(self):
         """Return row counts for all browsable tables."""
         tables = ["notes", "activities", "searches", "sessions", "projects",
-                  "organizations", "time_entries", "computers", "people",
+                  "organizations", "tasks", "project_aliases",
+                  "time_entries", "computers", "people",
                   "files", "training_examples"]
         counts = {}
         for t in tables:
@@ -766,6 +916,10 @@ class CortexDB:
             "time_summary": self.get_time_summary(limit=10),
             "recent_sessions": self.get_recent_sessions(5),
             "recent_notes": self.get_recent_notes(10),
+            # OPT-3: real (non-proposed) open tasks, the shared memory
+            # layer any agent can read/write. pending_reminders stays
+            # until the reminder migration passes its live parity check.
+            "open_tasks": self.open_tasks(limit=10),
             "pending_reminders": self.get_recent_notes(
                 limit=20, note_type="reminder",
             ),

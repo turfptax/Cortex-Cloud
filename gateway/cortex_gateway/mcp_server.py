@@ -92,6 +92,10 @@ mcp = FastMCP(
         "- cortex_orgs_list / cortex_org_get: the organization layer that "
         "groups projects (companies and thematic groups); org_tag on a "
         "project names its organization.\n"
+        "- cortex_tasks_list / cortex_task_add / cortex_task_update: the "
+        "shared task memory under each project. Log tasks you learn about "
+        "or complete so later agents see the context; this is memory, not "
+        "an execution queue.\n"
         f"- cortex_rules_list: {_OWNER}'s standing tech rules (hard-won engineering "
         "defaults). Read these before advising on their stack.\n"
         "- cortex_skills_list / cortex_skill_get: their tech-skills portfolio.\n"
@@ -262,6 +266,54 @@ def cortex_orgs_list() -> dict[str, Any]:
 def cortex_org_get(tag: str) -> dict[str, Any]:
     """One organization by tag, with its member projects. Read-only."""
     return pillars_service.org_get(_principal(), tag)
+
+
+@mcp.tool(title="List Cortex tasks",
+          annotations=ToolAnnotations(title="List Cortex tasks",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+def cortex_tasks_list(project: str = "", status: str = "",
+                      include_proposed: bool = False,
+                      limit: int = 40) -> dict[str, Any]:
+    """List tasks in the shared memory layer: things to be done under a
+    project, visible to every connecting agent. Optional filters:
+    `project` (canonical tag), `status` (open | in_progress | blocked |
+    done | cancelled). Overseer-extracted proposals are excluded unless
+    include_proposed. Read-only."""
+    return pillars_service.tasks_list(_principal(), project=project,
+                                      status=status,
+                                      include_proposed=include_proposed,
+                                      limit=limit)
+
+
+@mcp.tool(title="Add a Cortex task",
+          annotations=ToolAnnotations(title="Add a Cortex task",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=False, openWorldHint=False))
+def cortex_task_add(title: str, project: str, details: str = "",
+                    priority: int = 3, due_date: str = "") -> dict[str, Any]:
+    """Record a task under a project so later agents see it: shared
+    MEMORY, not an execution queue (the owner's separate tracker handles
+    claiming real work). The project must exist; observed names resolve
+    through the alias map. Works for any approved connection."""
+    return pillars_service.task_add(_principal(), title=title,
+                                    project=project, details=details,
+                                    priority=priority, due_date=due_date)
+
+
+@mcp.tool(title="Update a Cortex task",
+          annotations=ToolAnnotations(title="Update a Cortex task",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=False))
+def cortex_task_update(id: int = 0, uuid: str = "", status: str = "",
+                       details: str = "", priority: int = 0,
+                       due_date: str = "") -> dict[str, Any]:
+    """Update a task by id or uuid: status (open | in_progress | blocked |
+    done | cancelled), details, priority, or due_date. done/cancelled
+    stamp completed_at. Works for any approved connection."""
+    return pillars_service.task_update(_principal(), id=id, uuid=uuid,
+                                       status=status, details=details,
+                                       priority=priority, due_date=due_date)
 
 
 @mcp.tool(title="List Cortex tech rules",

@@ -109,6 +109,26 @@ def insert_project(values: dict) -> None:
     db.insert("projects", values)
 
 
+def upsert_task(values: dict):
+    """OPT-3: route a task write through the core's guarded upsert (the
+    write contract validates project_tag, status vocabulary, and uuid
+    idempotency core-side). Returns the task id the core reports. The
+    legacy single-file path fills the NOT NULL uuid itself since no core
+    contract runs there."""
+    if routed():
+        return _upsert("tasks", values)
+    values = dict(values)
+    if values.get("id"):
+        tid = values.pop("id")
+        values["updated_at"] = _utcnow()
+        sets = ", ".join(f"{k} = :{k}" for k in values)
+        db.execute(f"UPDATE tasks SET {sets} WHERE id = :id",
+                   {**values, "id": tid})
+        return tid
+    values.setdefault("uuid", str(uuid.uuid4()))
+    return db.insert("tasks", values)
+
+
 def patch_project(tag: str, fields: dict) -> None:
     """Partial update. The core's upsert_row updates ONLY the supplied
     columns when the PK row exists (never CMD:project_upsert here - that
