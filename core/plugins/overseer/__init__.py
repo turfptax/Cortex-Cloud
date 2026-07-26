@@ -640,6 +640,10 @@ class OverseerPlugin(Plugin):
             #    + rollup labels, so pulls attribute to projects.
             Route("POST", "/gists/backfill-project-tags",
                   self._http_backfill_gist_project_tags),
+            # ── OPT-1 (2026-07-26): distinct observed project names
+            #    from imports, the input to alias seeding.
+            Route("GET",  "/imported-projects",
+                  self._http_imported_projects),
             Route("POST", "/vector/search",
                   self._http_vector_search),
         ]
@@ -2998,6 +3002,21 @@ class OverseerPlugin(Plugin):
         if self.overseer_db is None:
             return {"ok": False, "error": "overseer not initialized"}
         return {"ok": True, **self.overseer_db.vector_status()}
+
+    def _http_imported_projects(self, payload):
+        """GET /plugins/overseer/imported-projects
+
+        OPT-1: the distinct observed project names from
+        imported_sessions, the input to the alias-seeding command
+        (CMD seed_project_aliases on the core)."""
+        db = self.overseer_db
+        if db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        try:
+            names = db.list_distinct_imported_projects()
+            return {"ok": True, "total": len(names), "projects": names}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _http_backfill_gist_project_tags(self, payload):
         """POST /plugins/overseer/gists/backfill-project-tags

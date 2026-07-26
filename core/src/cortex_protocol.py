@@ -186,6 +186,7 @@ class CortexProtocol:
             "training_update": self._cmd_training_update,
             # Generic CRUD
             "upsert": self._cmd_upsert,
+            "seed_project_aliases": self._cmd_seed_project_aliases,
             "delete": self._cmd_delete,
             "table_counts": self._cmd_table_counts,
         }
@@ -460,6 +461,21 @@ class CortexProtocol:
         return "RSP:query:" + json.dumps(results, separators=(",", ":"), default=str)
 
     # --- Generic CRUD ---
+
+    def _cmd_seed_project_aliases(self, payload, context):
+        """OPT-1: deterministic alias seeding on the single writer.
+        Payload: {"observed": ["name", ...]}. Returns the coverage
+        report (exact / seeded / ambiguous / unmatched / coverage_pct)."""
+        data = json.loads(payload) if payload else {}
+        observed = data.get("observed") or []
+        if not isinstance(observed, list):
+            return "ERR:seed_project_aliases:observed must be a list"
+        try:
+            report = self._db.seed_project_aliases(observed)
+            return "RSP:seed_project_aliases:" + json.dumps(
+                report, separators=(",", ":"), default=str)
+        except Exception as e:
+            return "ERR:seed_project_aliases:" + str(e)[:300]
 
     def _cmd_upsert(self, payload, context):
         data = json.loads(payload) if payload else {}

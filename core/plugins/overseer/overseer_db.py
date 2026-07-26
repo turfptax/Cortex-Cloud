@@ -6057,14 +6057,21 @@ class OverseerDB(CortexDB):
         ).fetchall()
         return [r["project"] for r in rows]
 
-    def imported_sessions_for_project(self, project):
+    def imported_sessions_for_project(self, project, names=None):
         """Return ALL imported_sessions rows for a project, oldest first.
         Used by project_summary aggregation; project rollups read each
-        row's metadata_json for the extended (token / file) stats."""
+        row's metadata_json for the extended (token / file) stats.
+
+        OPT-1: `names` widens the match to an alias group (the canonical
+        tag plus its observed variants) so stats aggregate the WHOLE
+        project even when import rows carry pre-alias observed names.
+        """
+        group = sorted({n for n in ((names or []) + [project]) if n})
+        marks = ",".join("?" * len(group))
         rows = self._conn.execute(
-            "SELECT * FROM imported_sessions WHERE project = ? "
-            "ORDER BY started_at ASC NULLS LAST, imported_at ASC",
-            (project,),
+            "SELECT * FROM imported_sessions WHERE project IN ({}) "
+            "ORDER BY started_at ASC NULLS LAST, imported_at ASC".format(marks),
+            group,
         ).fetchall()
         return [dict(r) for r in rows]
 

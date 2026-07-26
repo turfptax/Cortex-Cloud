@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS project_aliases (
+    alias        TEXT PRIMARY KEY,   -- observed name: cwd basename, merged-away tag, phone-local name
+    project_tag  TEXT NOT NULL,      -- canonical projects.tag
+    source       TEXT DEFAULT '',    -- 'auto-exact' | 'auto-normalized' | 'overseer-proposed' | 'tory'
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS organizations (
     tag TEXT PRIMARY KEY,
     name TEXT DEFAULT '',
@@ -529,6 +536,81 @@ class CortexDB:
         "training_ledger":    {"pk": "id",  "auto_pk": True},
     }
 
+    # ── OPT-1: canonical project identity ─────────────────────────
+
+    @staticmethod
+    def _norm_tag(s):
+        """Normalization for alias seeding: case-fold and collapse the
+        dash/underscore/space variants that cwd basenames produce."""
+        return (s or "").casefold().replace("-", "").replace("_", "").replace(" ", "")
+
+    def resolve_project_tag(self, name):
+        """Observed project name -> canonical tag.
+
+        Precedence (OPT-1, no shadowing possible): a canonical tag
+        ALWAYS wins; the alias map is consulted only on a canonical
+        miss. Unknown names return unchanged (identity), so callers
+        can resolve unconditionally.
+        """
+        if not name:
+            return name
+        hit = self._conn.execute(
+            "SELECT 1 FROM projects WHERE tag = ? LIMIT 1", (name,)
+        ).fetchone()
+        if hit:
+            return name
+        row = self._conn.execute(
+            "SELECT project_tag FROM project_aliases WHERE alias = ?",
+            (name,),
+        ).fetchone()
+        return row[0] if row else name
+
+    def seed_project_aliases(self, observed):
+        """Deterministic OPT-1 seeding: map observed project names onto
+        canonical projects.tag rows. Exact matches need no alias;
+        case/dash/underscore variants that match exactly ONE canonical
+        tag get an auto alias; ambiguous or unmatched names are
+        returned for the propose-then-accept campaign (never
+        auto-created). Aliases equal to ANY canonical tag are rejected
+        (precedence guard, seed path). Idempotent."""
+        tags = [r[0] for r in self._conn.execute(
+            "SELECT tag FROM projects").fetchall()]
+        tag_set = set(tags)
+        norm_map = {}
+        for t in tags:
+            norm_map.setdefault(self._norm_tag(t), []).append(t)
+        report = {"observed": 0, "exact": 0, "already_aliased": 0,
+                  "seeded": 0, "unmatched": [], "ambiguous": []}
+        for name in sorted({n for n in observed if n}):
+            report["observed"] += 1
+            if name in tag_set:
+                report["exact"] += 1
+                continue
+            existing = self._conn.execute(
+                "SELECT 1 FROM project_aliases WHERE alias = ?",
+                (name,)).fetchone()
+            if existing:
+                report["already_aliased"] += 1
+                continue
+            candidates = norm_map.get(self._norm_tag(name), [])
+            if len(candidates) == 1:
+                self._conn.execute(
+                    "INSERT INTO project_aliases (alias, project_tag, "
+                    "source) VALUES (?, ?, 'auto-normalized')",
+                    (name, candidates[0]))
+                report["seeded"] += 1
+            elif len(candidates) > 1:
+                report["ambiguous"].append(
+                    {"name": name, "candidates": candidates})
+            else:
+                report["unmatched"].append(name)
+        self._conn.commit()
+        resolved = (report["exact"] + report["already_aliased"]
+                    + report["seeded"])
+        report["coverage_pct"] = round(
+            100.0 * resolved / report["observed"], 1) if report["observed"] else 100.0
+        return report
+
     def upsert_row(self, table, data):
         """Partial-aware upsert for a whitelisted table.
 
@@ -552,6 +634,21 @@ class CortexDB:
             raise ValueError(f"Table '{table}' is not writable")
         info = self.WRITABLE_TABLES[table]
         pk = info["pk"]
+
+        # OPT-1 precedence guard (write path): one string, one resolution.
+        # A new project tag equal to an existing ALIAS would shadow the
+        # alias's canonical target, so reject it. (The seed path enforces
+        # the mirror rule: no alias equal to an existing canonical tag.)
+        if table == "projects" and "tag" in data:
+            shadow = self._conn.execute(
+                "SELECT project_tag FROM project_aliases WHERE alias = ?",
+                (data["tag"],),
+            ).fetchone()
+            if shadow:
+                raise ValueError(
+                    "tag '{}' is an alias of project '{}'; use the "
+                    "canonical tag or remove the alias first".format(
+                        data["tag"], shadow[0]))
 
         # No PK supplied on an auto-PK table → straight INSERT.
         if info["auto_pk"] and pk not in data:
