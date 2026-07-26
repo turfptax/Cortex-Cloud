@@ -828,7 +828,10 @@ CREATE TABLE IF NOT EXISTS project_summaries (
     -- narrative_stale on mismatch. Existing installs get both via
     -- _migrate_opt4_fingerprint.
     child_fingerprint TEXT NOT NULL DEFAULT '',
-    narrative_stale INTEGER NOT NULL DEFAULT 0
+    narrative_stale INTEGER NOT NULL DEFAULT 0,
+    -- OPT-5.5: gist_prompts.id of the prompt version that produced
+    -- the narrative (0 = pre-library). Stamped by apply_narrative.
+    narrative_prompt_version_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_project_summaries_last_active
     ON project_summaries(last_active_at);
@@ -1341,9 +1344,9 @@ CREATE INDEX IF NOT EXISTS idx_pull_events_surface
 -- back to the constant + writes the constant in as v1 on first boot.
 CREATE TABLE IF NOT EXISTS gist_prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    version_label TEXT NOT NULL UNIQUE,        -- 'v1', 'v2-add-decisions', etc.
+    version_label TEXT NOT NULL UNIQUE,        -- '<purpose>-v1' etc.; globally unique by convention (the column constraint predates purposes)
     prompt_text TEXT NOT NULL,
-    is_active INTEGER NOT NULL DEFAULT 0,      -- 1 for the currently-used prompt; only one row should be active
+    is_active INTEGER NOT NULL DEFAULT 0,      -- 1 for the currently-used prompt; one active row PER PURPOSE
     rationale TEXT,                            -- why this version was created
     -- Performance signals (computed periodically by overseer, not live).
     -- A high pulled_past_count / generated_count ratio = consumers
@@ -1353,9 +1356,22 @@ CREATE TABLE IF NOT EXISTS gist_prompts (
     gists_pulled_past INTEGER NOT NULL DEFAULT 0,
     last_signals_computed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    deprecated_at TEXT
+    deprecated_at TEXT,
+    -- OPT-5.5 (Tory directive 2026-07-26): the table generalizes into
+    -- the tiered prompt LIBRARY. purpose keys the tier, matching the
+    -- llm.model_overrides vocabulary: summarize-session,
+    -- project-narrative, org-narrative, task-extract, org-classify,
+    -- merge-check, temporal-*. Existing installs get the column via
+    -- _migrate_opt55_prompt_purpose. Physical table name kept: the
+    -- summaries_gist FK and detail tokens reference it.
+    purpose TEXT NOT NULL DEFAULT 'summarize-session'
 );
 CREATE INDEX IF NOT EXISTS idx_gist_prompts_active ON gist_prompts(is_active);
+-- idx_gist_prompts_purpose is created in _migrate_opt55_prompt_purpose,
+-- NOT here: on an existing install gist_prompts predates the purpose
+-- column (CREATE TABLE IF NOT EXISTS skips the table, then this index
+-- would reference a column the ALTER has not added yet). Same fragile
+-- pattern as idx_chat_thread above.
 """
 
 
@@ -1423,6 +1439,9 @@ class OverseerDB(CortexDB):
         # OPT-4 (2026-07-26): R6 fingerprint columns on
         # project_summaries. Same direct-call rule.
         self._migrate_opt4_fingerprint()
+        # OPT-5.5 (2026-07-26): prompt library purpose column +
+        # narrative version stamp. Same direct-call rule.
+        self._migrate_opt55_prompt_purpose()
         # Slice 9.4.1 (2026-05-16): every _at column gets a paired
         # local_<col>_at populated by trigger. Auto-discovers any new
         # tables added by future slices so the "time always shows
@@ -3117,6 +3136,32 @@ class OverseerDB(CortexDB):
                 self._safe_commit()
             except Exception:
                 pass  # column already exists
+
+    def _migrate_opt55_prompt_purpose(self):
+        """OPT-5.5 (2026-07-26, Tory directive): gist_prompts becomes
+        the tiered prompt library. Adds the purpose column (existing
+        rows are gist prompts, so the default is right), the per-tier
+        active index, and the narrative version stamp on
+        project_summaries. CREATE TABLE IF NOT EXISTS never
+        retrofits, so existing installs need the ALTERs."""
+        for ddl in (
+            "ALTER TABLE gist_prompts ADD COLUMN "
+            "purpose TEXT NOT NULL DEFAULT 'summarize-session'",
+            "ALTER TABLE project_summaries ADD COLUMN "
+            "narrative_prompt_version_id INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                self._conn.execute(ddl)
+                self._safe_commit()
+            except Exception:
+                pass  # column already exists
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gist_prompts_purpose "
+                "ON gist_prompts(purpose, is_active)")
+            self._safe_commit()
+        except Exception:
+            pass
 
     def backfill_gist_project_tags(self):
         """One-time OPT-0 backfill: stamp project_tag on existing
@@ -6771,56 +6816,140 @@ class OverseerDB(CortexDB):
             "gateway_attached": bool(self.gateway_db_attached),
         }
 
-    # ── Phase 1 (2026-05-27): gist_prompts ──────────────────────
+    # ── OPT-5.5 (2026-07-26): the tiered prompt library ─────────
     #
-    # Currently a placeholder. The current gist prompt is generated
-    # by prompts.session_gist_prompt(*kwargs*), so until the prompt is
-    # restructured to support DB-sourced templating, this table is
-    # write-rarely / read-rarely. Helpers below let the overseer author
-    # v1 when it decides to evolve the prompt and read the active row
-    # at that point.
+    # gist_prompts generalized per Tory's directive: every
+    # summarization tier's prompt is a versioned, vettable row keyed
+    # by purpose, one active per purpose. Generators resolve DB-first
+    # and self-seed their hardcoded constant as '<purpose>-v1' on
+    # first use (zero behavior change at seed time); outputs stamp
+    # the version id so OPT-7 recall grading can score versions.
+    # Physical table name kept: the summaries_gist FK and detail
+    # tokens reference it.
 
-    def get_active_gist_prompt(self):
-        """Return the currently-active gist_prompts row or None."""
+    def get_active_prompt(self, purpose):
+        """The active prompt version row for one tier, or None."""
         row = self._conn.execute(
-            "SELECT * FROM gist_prompts WHERE is_active = 1 "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM gist_prompts WHERE purpose = ? "
+            "AND is_active = 1 ORDER BY id DESC LIMIT 1",
+            (purpose,),
         ).fetchone()
         return dict(row) if row else None
 
-    def list_gist_prompts(self, *, limit=20):
-        rows = self._conn.execute(
-            "SELECT * FROM gist_prompts ORDER BY id DESC LIMIT ?",
-            (int(limit),),
-        ).fetchall()
+    def get_active_gist_prompt(self):
+        """Back-compat shim: the gist tier's active row (used by
+        add_gist for prompt_version_id stamping)."""
+        return self.get_active_prompt("summarize-session")
+
+    def resolve_prompt(self, purpose, fallback_text):
+        """DB-first prompt resolution with idempotent self-seeding.
+
+        Returns (prompt_text, version_id). If the tier has an active
+        row, that row wins; otherwise the hardcoded fallback is
+        seeded as '<purpose>-v1' (rationale records the origin) and
+        returned, so the library's birth is unobservable except in
+        the stamps. Never raises: on any failure the fallback text
+        returns with version_id 0."""
+        try:
+            row = self.get_active_prompt(purpose)
+            if row and (row.get("prompt_text") or "").strip():
+                return row["prompt_text"], int(row["id"])
+            label = "{}-v1".format(purpose)
+            hit = self._conn.execute(
+                "SELECT id FROM gist_prompts WHERE version_label = ?",
+                (label,),
+            ).fetchone()
+            if hit:
+                # Seeded but deactivated: honor the deactivation,
+                # keep attribution.
+                return fallback_text, int(hit["id"])
+            pid = self.add_prompt_version(
+                purpose=purpose, version_label=label,
+                prompt_text=fallback_text,
+                rationale="hardcoded original, self-seeded as v1 "
+                          "(OPT-5.5)",
+                make_active=True)
+            return fallback_text, int(pid)
+        except Exception as e:
+            log.warning("resolve_prompt(%s) failed: %s", purpose, e)
+            return fallback_text, 0
+
+    def list_prompts(self, *, purpose=None, limit=50):
+        if purpose:
+            rows = self._conn.execute(
+                "SELECT * FROM gist_prompts WHERE purpose = ? "
+                "ORDER BY id DESC LIMIT ?", (purpose, int(limit)),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM gist_prompts "
+                "ORDER BY purpose, id DESC LIMIT ?", (int(limit),),
+            ).fetchall()
         return [dict(r) for r in rows]
 
-    def add_gist_prompt(self, *, version_label, prompt_text,
-                        rationale=None, make_active=False):
-        """Insert a new gist_prompts version. If make_active=True,
-        deprecates the current active row first. Returns the new row id.
-        """
-        if not version_label or not prompt_text:
+    def add_prompt_version(self, *, purpose, version_label,
+                           prompt_text, rationale=None,
+                           make_active=False):
+        """Insert a prompt version for one tier. make_active
+        deactivates the tier's current active row first (scoped to
+        the purpose; other tiers are untouched). version_label is
+        globally unique by table constraint; the '<purpose>-vN'
+        convention keeps that painless. Returns the new row id."""
+        if not purpose or not version_label or not prompt_text:
             raise ValueError(
-                "version_label and prompt_text are required")
+                "purpose, version_label and prompt_text are required")
         if make_active:
             self._conn.execute(
                 "UPDATE gist_prompts SET is_active = 0, "
-                "deprecated_at = datetime('now') WHERE is_active = 1"
-            )
+                "deprecated_at = datetime('now') "
+                "WHERE purpose = ? AND is_active = 1", (purpose,))
         cur = self._conn.execute(
             "INSERT INTO gist_prompts "
-            "(version_label, prompt_text, is_active, rationale) "
-            "VALUES (?, ?, ?, ?)",
-            (
-                str(version_label),
-                str(prompt_text),
-                1 if make_active else 0,
-                str(rationale) if rationale else None,
-            ),
+            "(version_label, prompt_text, is_active, rationale, "
+            "purpose) VALUES (?, ?, ?, ?, ?)",
+            (str(version_label), str(prompt_text),
+             1 if make_active else 0,
+             str(rationale) if rationale else None, str(purpose)),
         )
         self._safe_commit()
         return cur.lastrowid
+
+    def activate_prompt_version(self, *, version_id):
+        """Make one version the tier's active prompt (deactivating
+        its purpose peers). Returns the activated row."""
+        row = self._conn.execute(
+            "SELECT * FROM gist_prompts WHERE id = ?",
+            (int(version_id),),
+        ).fetchone()
+        if not row:
+            raise ValueError(
+                "unknown prompt version {}".format(version_id))
+        purpose = row["purpose"]
+        self._conn.execute(
+            "UPDATE gist_prompts SET is_active = 0, "
+            "deprecated_at = datetime('now') "
+            "WHERE purpose = ? AND is_active = 1 AND id != ?",
+            (purpose, int(version_id)))
+        self._conn.execute(
+            "UPDATE gist_prompts SET is_active = 1, "
+            "deprecated_at = NULL WHERE id = ?", (int(version_id),))
+        self._safe_commit()
+        return dict(self._conn.execute(
+            "SELECT * FROM gist_prompts WHERE id = ?",
+            (int(version_id),)).fetchone())
+
+    def add_gist_prompt(self, *, version_label, prompt_text,
+                        rationale=None, make_active=False):
+        """Back-compat shim for the gist tier."""
+        return self.add_prompt_version(
+            purpose="summarize-session", version_label=version_label,
+            prompt_text=prompt_text, rationale=rationale,
+            make_active=make_active)
+
+    def list_gist_prompts(self, *, limit=20):
+        """Back-compat shim: gist-tier versions only."""
+        return self.list_prompts(purpose="summarize-session",
+                                 limit=limit)
 
     # ── Slice 5: human_journal_entries ──────────────────────────
 

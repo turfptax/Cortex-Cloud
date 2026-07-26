@@ -315,7 +315,14 @@ def generate_narrative(*, db, llm, project, stats, max_cost_usd=None,
     open_questions = _gather_project_questions(db, project)
     journal = db.recent_journal_entries(limit=2) or []
 
-    prompt = NARRATIVE_PROMPT_TEMPLATE.format(
+    # OPT-5.5: the template comes from the prompt library (the module
+    # constant self-seeds as project-narrative-v1 on first use). A
+    # library version with broken placeholders falls back to the
+    # constant rather than crashing generation; the fallback output
+    # attributes to version 0 so the bad version never claims it.
+    template, prompt_version_id = db.resolve_prompt(
+        "project-narrative", NARRATIVE_PROMPT_TEMPLATE)
+    fmt_kwargs = dict(
         project_name=project,
         stats_block=_format_stats_block(stats),
         gist_count=min(8, len(gists)),
@@ -324,6 +331,15 @@ def generate_narrative(*, db, llm, project, stats, max_cost_usd=None,
         open_questions_block=_format_open_questions_block(open_questions),
         journal_block=_format_journal_block(journal),
     )
+    try:
+        prompt = template.format(**fmt_kwargs)
+    except Exception as e:
+        log.warning(
+            "prompt version %s has broken placeholders (%s); "
+            "falling back to the module constant",
+            prompt_version_id, e)
+        prompt = NARRATIVE_PROMPT_TEMPLATE.format(**fmt_kwargs)
+        prompt_version_id = 0
 
     t0 = time.monotonic()
     result = llm.complete(
@@ -363,11 +379,13 @@ def generate_narrative(*, db, llm, project, stats, max_cost_usd=None,
         "prompt_tokens": result.get("prompt_tokens", 0),
         "completion_tokens": result.get("completion_tokens", 0),
         "triggered_by": triggered_by,
+        "prompt_version_id": prompt_version_id,
     }
 
 
 def apply_narrative(*, db, project, narrative_text, cost_usd,
-                    session_count_at_update, core=None):
+                    session_count_at_update, core=None,
+                    prompt_version_id=0):
     """Persist a generated narrative onto project_summaries. Caller
     passes the session_count it observed when generating, so the
     next regen-trigger check has the right baseline to compare
@@ -390,6 +408,7 @@ def apply_narrative(*, db, project, narrative_text, cost_usd,
         narrative_updated_at=_now_iso(db),
         narrative_session_count_at_update=int(session_count_at_update or 0),
         narrative_cost_usd=round(float(cost_usd or 0.0), 4),
+        narrative_prompt_version_id=int(prompt_version_id or 0),
     )
     try:
         import curator

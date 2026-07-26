@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by   TEXT DEFAULT '',            -- connector handle / 'tory' / 'overseer'
     external_ref TEXT DEFAULT '',            -- business-tracker task id hedge (federate link)
     completed_at TEXT DEFAULT '',
+    -- OPT-5.5: gist_prompts.id of the extraction prompt version that
+    -- proposed this task (0 = manual/pre-library). Existing installs
+    -- get it via _migrate_opt55_task_prompt.
+    extract_prompt_version INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -228,6 +232,7 @@ class CortexDB:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA_SQL)
         self._migrate_opt2_orgs()
+        self._migrate_opt55_task_prompt()
         self._conn.commit()
         # Slice 9.4.1 (2026-05-16): every timestamp column gets a
         # paired local_<col>_at (ISO with explicit offset) populated
@@ -377,6 +382,18 @@ class CortexDB:
             "(tag, name, org_type, is_default, sort_order) "
             "VALUES ('unsorted', 'Unsorted', 'thematic', 1, 999)")
         self._conn.commit()
+
+    def _migrate_opt55_task_prompt(self):
+        """OPT-5.5: prompt-version attribution on extracted tasks.
+        CREATE TABLE IF NOT EXISTS never retrofits, so existing
+        installs need the ALTER."""
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN "
+                "extract_prompt_version INTEGER NOT NULL DEFAULT 0")
+            self._conn.commit()
+        except Exception:
+            pass  # column already exists
 
     def valid_org_tags(self):
         return [r[0] for r in self._conn.execute(

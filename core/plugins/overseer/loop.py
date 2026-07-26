@@ -1861,6 +1861,7 @@ class OverseerLoop:
                     session_count_at_update=row.get(
                         "session_count", 0),
                     core=self._core,
+                    prompt_version_id=gen.get("prompt_version_id", 0),
                 )
             except Exception as e:
                 self._log.exception(

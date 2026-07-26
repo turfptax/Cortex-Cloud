@@ -484,6 +484,13 @@ class OverseerPlugin(Plugin):
             # ── Slice 4 CP1b: project narrative ──────────────────
             Route("POST", "/narrative/generate",
                   self._http_generate_project_narrative),
+            # ── OPT-5.5: tiered prompt library ───────────────────
+            Route("GET",  "/prompts",
+                  self._http_list_prompts),
+            Route("POST", "/prompts/add",
+                  self._http_add_prompt),
+            Route("POST", "/prompts/activate",
+                  self._http_activate_prompt),
             # ── Slice 5: temporal cadence ────────────────────────
             Route("GET",  "/temporal",
                   self._http_list_temporal),
@@ -1420,6 +1427,64 @@ class OverseerPlugin(Plugin):
             log.exception("refresh_all_project_summaries failed")
             return {"ok": False, "error": "refresh-all failed: " + str(e)}
 
+    # ── OPT-5.5: tiered prompt library routes ──────────────────
+
+    def _http_list_prompts(self, payload):
+        """GET /plugins/overseer/prompts?purpose=<tier>
+
+        Versions for one tier, or every tier when purpose is omitted.
+        Tiers use the llm.model_overrides vocabulary (task-extract,
+        project-narrative, org-narrative, merge-check, ...)."""
+        if self.overseer_db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        purpose = (payload.get("purpose") or "").strip() or None
+        try:
+            rows = self.overseer_db.list_prompts(purpose=purpose)
+            for r in rows:
+                r["prompt_excerpt"] = (r.get("prompt_text") or "")[:300]
+            return {"ok": True, "prompts": rows, "count": len(rows)}
+        except Exception as e:
+            log.exception("list_prompts failed")
+            return {"ok": False, "error": str(e)}
+
+    def _http_add_prompt(self, payload):
+        """POST /plugins/overseer/prompts/add
+
+        Body: {purpose, version_label, prompt_text, rationale?,
+        make_active?}. Vet on GistLens before activating."""
+        if self.overseer_db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        try:
+            pid = self.overseer_db.add_prompt_version(
+                purpose=(payload.get("purpose") or "").strip(),
+                version_label=(payload.get("version_label")
+                               or "").strip(),
+                prompt_text=payload.get("prompt_text") or "",
+                rationale=payload.get("rationale"),
+                make_active=bool(payload.get("make_active")))
+            return {"ok": True, "id": pid}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            log.exception("add_prompt failed")
+            return {"ok": False, "error": str(e)}
+
+    def _http_activate_prompt(self, payload):
+        """POST /plugins/overseer/prompts/activate  Body: {id}."""
+        if self.overseer_db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        try:
+            row = self.overseer_db.activate_prompt_version(
+                version_id=int(payload.get("id") or 0))
+            return {"ok": True, "active": {
+                "id": row["id"], "purpose": row["purpose"],
+                "version_label": row["version_label"]}}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            log.exception("activate_prompt failed")
+            return {"ok": False, "error": str(e)}
+
     # ── Slice 4 CP1b: narrative generation route ───────────────
 
     def _http_generate_project_narrative(self, payload):
@@ -1504,6 +1569,7 @@ class OverseerPlugin(Plugin):
                 cost_usd=gen.get("cost_usd", 0.0),
                 session_count_at_update=row.get("session_count", 0),
                 core=self.core_memory,
+                prompt_version_id=gen.get("prompt_version_id", 0),
             )
         except Exception as e:
             log.exception("apply_narrative failed for %s", project)
