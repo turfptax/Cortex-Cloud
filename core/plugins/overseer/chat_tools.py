@@ -21,8 +21,8 @@ Surfaces by category (~35 tools total):
   actions_json), get_pending_notification_responses,
   mark_notification_responses_processed.
 - **Sibling/B-agent dispatch**: dispatch_sibling (Cat A, Claude Code),
-  rate_sibling_result, dispatch_b_<name> (Cat B specialists),
-  accept_c_promotion (B→C graduation).
+  rate_sibling_result. (Category B dispatch + accept_c_promotion
+  retired in OPT-4b, 2026-07-26; the merge check lives in curator.py.)
 - **Evidence + sensitivity**: file_evidence, propose_project_merge,
   redact_imported_session, scan_for_sensitive_content,
   redact_human_journal.
@@ -1041,49 +1041,10 @@ TOOL_DEFINITIONS: list[dict] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "accept_c_promotion",
-            "description": (
-                "Slice 10 CP5 (2026-05-20): accept a B-agent C-"
-                "graduation proposal from the owner. Creates the c_agents "
-                "row, freezing the B parent's system_prompt and model "
-                "at promotion time. Call this ONLY after the owner has "
-                "clicked 'Promote to C' on a c-graduation notification "
-                "(check pending_notification_responses for actions of "
-                "kind='promote_b_to_c'). C runs on a schedule "
-                "(cadence_minutes; default 1440 = 24h) and shares the "
-                "B's snapshot-builder, but its audit rows carry "
-                "target='c-agent:<name>' instead of 'b-agent:<name>'. "
-                "Idempotent: returns error if c_agent_name already "
-                "exists."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "b_agent_name": {
-                        "type": "string",
-                        "description": "Parent B agent name (e.g. "
-                                       "'theme_check'). Must exist in "
-                                       "the live B registry.",
-                    },
-                    "c_agent_name": {
-                        "type": "string",
-                        "description": "Name for the new C agent "
-                                       "(e.g. 'theme-check-daily'). "
-                                       "Must be unique across c_agents.",
-                    },
-                    "cadence_minutes": {
-                        "type": "integer",
-                        "description": "Run interval in minutes. "
-                                       "Default 1440 (24h).",
-                    },
-                },
-                "required": ["b_agent_name", "c_agent_name"],
-            },
-        },
-    },
+    # (accept_c_promotion removed in OPT-4b, 2026-07-26: B agents are
+    # retired, so there is nothing left to graduate. The c_agents
+    # table and promote_b_to_c stay with the C cluster pending its
+    # own keep/kill verdict.)
     # ── Phase 1 / Audit follow-up (2026-05-27): F1 reader surface ──
     # External AIs already have cortex_search + cortex_overseer_detail
     # via the MCP wrapper. The 24h activity bundle audit showed
@@ -1407,18 +1368,10 @@ TOOL_DEFINITIONS: list[dict] = [
     },
 ]
 
-# ── Slice 10 (2026-05-20): Category B agent tools ────────────────
-# B agents are stateless Sonnet-backed audit specialists. Their tool
-# defs live in b_agents.B_AGENTS and are merged in here so the chat
-# layer + journal step pick them up automatically.
-try:
-    import b_agents  # noqa: E402
-    TOOL_DEFINITIONS.extend(b_agents.b_agent_tool_definitions())
-    log.info("merged %d Category B agent tool definitions",
-             len(b_agents.B_AGENTS))
-except Exception as _b_imp_err:  # pragma: no cover - import safety net
-    log.warning("failed to merge B-agent tool definitions: %s",
-                _b_imp_err)
+# (Category B agent tool merge removed in OPT-4b, 2026-07-26. The
+# structure audit's folded merge check in curator.py replaced the one
+# B audit with live value; b_invocation_transcripts stays as the
+# historical record and Lemon's latency source.)
 
 
 # Per-call iteration cap - bounds blast radius if the model loops.
@@ -1509,22 +1462,8 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
         rules = db.list_rules(status="active", stack=stack, limit=50)
         return {"rules": rules, "count": len(rules)}
 
-    # ── Slice 10: Category B agent dispatch ──────────────────────
-    # Any tool name starting with 'dispatch_b_' routes to the B-agent
-    # dispatcher. Distinguished from dispatch_sibling (A) by the
-    # prefix. The B daily cap is hard-coded at 50 for the first
-    # rollout; will be configurable via plugin.toml in a later slice
-    # if we observe runaway dispatch (Tory's risk #2 in the plan).
-    if name.startswith("dispatch_b_"):
-        b_name = name[len("dispatch_b_"):]
-        try:
-            import b_agents
-        except Exception as e:
-            return {"error": f"b_agents module unavailable: {e}"[:200]}
-        return b_agents.dispatch_b_agent(
-            b_name, args, db=db, core_memory=core_memory,
-            llm=llm, b_daily_cap=50,
-        )
+    # (dispatch_b_ routing removed in OPT-4b, 2026-07-26; unknown
+    # dispatch_b_* names now fall through to the unknown-tool error.)
 
     # ── F1 reader-surface tools (2026-05-27 audit follow-up) ───────
     # Unified search + token-drill so overseer can run its own
@@ -2155,46 +2094,6 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
         except Exception as e:
             return {"error": f"mark_processed failed: {e}"[:200]}
 
-    # ── Slice 10 CP5 (2026-05-20): C-graduation accept handler ────
-
-    if name == "accept_c_promotion":
-        b_agent_name = (args.get("b_agent_name") or "").strip()
-        c_agent_name = (args.get("c_agent_name") or "").strip()
-        cadence_minutes = int(args.get("cadence_minutes") or 1440)
-        if not b_agent_name or not c_agent_name:
-            return {"error": "b_agent_name + c_agent_name required"}
-        try:
-            import b_agents as _ba
-        except Exception as e:
-            return {"error": f"b_agents unavailable: {e}"[:200]}
-        if b_agent_name not in _ba.B_AGENTS:
-            return {"error": f"unknown B parent '{b_agent_name}'"}
-        spec = _ba.B_AGENTS[b_agent_name]
-        # Pull current rolling stats so the promotion row records
-        # the numbers that justified it.
-        try:
-            stats = db.b_agent_stats(
-                window_days=db.C_GRADUATION_WINDOW_DAYS)
-            row = next(
-                (s for s in stats["by_agent"] if s["name"] == b_agent_name),
-                None,
-            )
-            d_at = (row or {}).get("dispatches", 0)
-            r4_at = (row or {}).get("rated_4_plus", 0)
-        except Exception:
-            d_at = 0
-            r4_at = 0
-        try:
-            return db.promote_b_to_c(
-                b_agent_name=b_agent_name,
-                c_agent_name=c_agent_name,
-                system_prompt=spec["system_prompt"],
-                model=spec["model"],
-                cadence_minutes=cadence_minutes,
-                dispatches_at_promotion=d_at,
-                rated_4plus_at_promotion=r4_at,
-            )
-        except Exception as e:
-            return {"error": f"promote_b_to_c failed: {e}"[:200]}
+    # (accept_c_promotion handler removed in OPT-4b, 2026-07-26.)
 
     return {"error": "unknown tool: {}".format(name)}
