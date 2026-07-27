@@ -47,6 +47,42 @@ NARRATIVE_TABLES = ("temporal_narratives",)
 # Four timestamp columns carry localizer trigger pairs.
 SUMMARY_TABLES = ("project_summaries",)
 
+# Phase C sub-slice 5b, the finale: per-session gists. Its FK parents
+# (raw_pointers, gist_prompts) and the vec0 vector index stay in
+# overseer.db by R5; vec_gists is a STANDALONE vec0 table keyed by its
+# own gist_id column (no content= binding), so the correlation is by
+# stored value and survives the file boundary.
+GIST_TABLES = ("summaries_gist",)
+
+_GIST_LOCAL_PAIRS = (
+    ("summaries_gist", "created_at"),
+    ("summaries_gist", "axis_processed_at"),
+)
+
+GIST_FRESH_DDL = (
+    """CREATE TABLE IF NOT EXISTS userdb.summaries_gist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_label TEXT NOT NULL,
+    period_start TEXT,
+    period_end TEXT,
+    body TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'med',
+    raw_pointer_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    local_created_at TEXT NOT NULL DEFAULT '',
+    prompt_version_id INTEGER NOT NULL DEFAULT 0,
+    modality TEXT NOT NULL DEFAULT '',
+    lens TEXT NOT NULL DEFAULT '',
+    axis_processed_at TEXT,
+    local_axis_processed_at TEXT DEFAULT '',
+    project_tag TEXT NOT NULL DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_gist_created"
+    " ON summaries_gist(created_at)",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_gist_period"
+    " ON summaries_gist(period_label)",
+)
+
 _SUMMARY_LOCAL_PAIRS = (
     ("project_summaries", "first_active_at"),
     ("project_summaries", "last_active_at"),
@@ -282,13 +318,43 @@ def _retarget(sql, kind):
     return re.sub(pattern, r"\1userdb.\2", sql, count=1, flags=re.IGNORECASE)
 
 
+# Sub-slice 5b: FK parents that stay in overseer.db. A moved child
+# keeping these clauses cannot be written at all: SQLite resolves FK
+# parents only within the child's own database, so every INSERT raises
+# "no such table: userdb.<parent>" under foreign_keys=ON. Cross-database
+# FKs never enforce anyway, so the clause is dropped and the column
+# becomes a soft reference (same trade as sub-slice 5a's inbound half).
+STAY_BEHIND_PARENTS = ("raw_pointers", "gist_prompts", "imported_sessions",
+                       "summaries_episode")
+
+_OUTBOUND_FK_RE = re.compile(
+    r",?\s*FOREIGN\s+KEY\s*\(\s*\w+\s*\)\s*REFERENCES\s+"
+    r"(?:{})\s*\([^)]*\)(\s+ON\s+DELETE\s+\w+)?".format(
+        "|".join(STAY_BEHIND_PARENTS)),
+    re.IGNORECASE)
+
+
+def _strip_stay_behind_fks(sql, log=None, table=""):
+    out = _OUTBOUND_FK_RE.sub("", sql)
+    if out == sql:
+        return sql
+    out = re.sub(r",(\s*)\)\s*$", r"\1)", out.rstrip().rstrip(";"))
+    if log:
+        log("people_pillar: %s copied without its FK(s) to tables that "
+            "stay in overseer.db (soft references now)" % table)
+    return out
+
+
 def _copy_schema(conn, table, log):
     """Recreate one table (plus its indexes and triggers) in userdb by
     copying the LIVE sqlite_master SQL verbatim, so script-added columns
-    and localizer triggers travel exactly as they exist."""
+    and localizer triggers travel exactly as they exist. The one
+    deliberate edit: FK clauses pointing at tables that stay behind are
+    dropped, because they would make the moved table unwritable."""
     tsql = conn.execute(
         "SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?",
         (table,)).fetchone()[0]
+    tsql = _strip_stay_behind_fks(tsql, log, table)
     conn.execute(_retarget(tsql, "table"))
     for kind in ("index", "trigger"):
         rows = conn.execute(
@@ -601,8 +667,13 @@ def ensure(conn, log=None):
         list(SUMMARY_FRESH_DDL) + _fresh_triggers(_SUMMARY_LOCAL_PAIRS),
         log, "summaries_move")
     # Sub-slice 5a: detach the gist FK edges so 5b can move the table
-    # without freezing these children against a renamed archive.
+    # without freezing these children against a renamed archive. Must
+    # run BEFORE the gist move on the same boot.
     report["fk_detach"] = detach_gist_fks(conn, log)
+    report["gists"] = _move_group(
+        conn, GIST_TABLES,
+        list(GIST_FRESH_DDL) + _fresh_triggers(_GIST_LOCAL_PAIRS),
+        log, "gists_move")
     # Legacy retirement is sealed separately: a failure here reports
     # but never unwinds the completed moves.
     report["absorbed"] = 0
