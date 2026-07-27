@@ -2,7 +2,9 @@
 
 Manages the Cortex knowledge database (cortex.db). Core tables:
 sessions, notes, activities, searches, projects, organizations,
-time_entries, computers, people, files, training_examples, training_ledger.
+time_entries, computers, files, training_examples, training_ledger,
+plus the People pillar (overseer_people and friends, created and moved
+here by the overseer plugin's people_pillar.py per OPT-10 Phase C).
 
 Pet/heartbeat schema and helpers live in the cortex-pet sister repo's
 pet_db.py (Slice 2c2d schema move; Slice 11 full plugin extraction).
@@ -184,15 +186,11 @@ CREATE TABLE IF NOT EXISTS computers (
     notes TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS people (
-    id TEXT PRIMARY KEY,
-    name TEXT DEFAULT '',
-    role TEXT DEFAULT '',
-    email TEXT DEFAULT '',
-    projects TEXT DEFAULT '',
-    notes TEXT DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- The legacy `people` table was RETIRED in OPT-10 Phase C sub-slice 1
+-- (2026-07-27): its rows were absorbed into overseer_people (now living
+-- in this file, created by the overseer plugin's people_pillar.py) and
+-- the original renamed _migrated_people. One people table on the
+-- ledger surface (V2-FIX).
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -717,19 +715,9 @@ class CortexDB:
         return cur.rowcount > 0
 
     # --- People ---
-
-    def upsert_person(self, person_id, name="", role="", email="",
-                      projects="", notes=""):
-        self._conn.execute(
-            "INSERT INTO people (id, name, role, email, projects, notes) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, "
-            "role=excluded.role, email=excluded.email, "
-            "projects=excluded.projects, notes=excluded.notes",
-            (person_id, name, role, email, projects, notes),
-        )
-        self._conn.commit()
-        return person_id
+    # upsert_person + the legacy people table retired in OPT-10 Phase C
+    # sub-slice 1: overseer_people is the one people table, written only
+    # through the overseer plugin's people surface.
 
     # --- Stats / Queries ---
 
@@ -791,7 +779,6 @@ class CortexDB:
         "tasks":              {"pk": "id",  "auto_pk": True},
         "project_aliases":    {"pk": "alias", "auto_pk": False},
         "time_entries":       {"pk": "id",  "auto_pk": True},
-        "people":             {"pk": "id",  "auto_pk": False},
         "computers":          {"pk": "hostname", "auto_pk": False},
         "training_examples":  {"pk": "id",  "auto_pk": True},
         "training_ledger":    {"pk": "id",  "auto_pk": True},
@@ -1209,9 +1196,13 @@ class CortexDB:
         """Return row counts for all browsable tables."""
         tables = ["notes", "activities", "searches", "sessions", "projects",
                   "organizations", "org_summaries", "tasks",
-                  "project_aliases", "time_entries", "computers", "people",
+                  "project_aliases", "time_entries", "computers",
                   "files", "training_examples",
-                  "agents", "agent_messages", "agent_cursors"]
+                  "agents", "agent_messages", "agent_cursors",
+                  # OPT-10 Phase C sub-slice 1: the rest of the People
+                  # pillar, physically in cortex.db (legacy people
+                  # retired; overseer_people counts via the read list).
+                  "project_people", "person_notes", "phone_contacts"]
         # OPT-10 Phase B: overseer-parked user tables count too when the
         # read-only ATTACH is live (the except path zeros them if not).
         tables.extend(self.OVERSEER_READ_TABLES)

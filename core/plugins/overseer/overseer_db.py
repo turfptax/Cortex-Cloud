@@ -888,71 +888,14 @@ CREATE INDEX IF NOT EXISTS idx_human_journal_created
 -- relationships naturally - NOT for CRM-style tracking, no nags,
 -- no "haven't talked to X in N days" surfaces.
 --
--- name has UNIQUE - primary dedup key. Agents check via search
--- before adding; add tool is idempotent on case-insensitive name
--- match. created_by_agent + created_by_session_id form the audit
--- trail so the user can spot-check what's been captured by which
--- agent in which work session.
-
-CREATE TABLE IF NOT EXISTS overseer_people (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,                     -- canonical name (case-sensitive storage; case-insensitive match)
-    display_name TEXT NOT NULL DEFAULT '',         -- how the user usually refers to them
-    online_handles_json TEXT NOT NULL DEFAULT '[]',-- JSON array: ["@x", "github/y"]
-    social_links_json TEXT NOT NULL DEFAULT '[]',  -- JSON array: ["https://...", "linkedin.com/..."]
-    areas_of_expertise_json TEXT NOT NULL DEFAULT '[]', -- JSON array of tags
-    notes TEXT NOT NULL DEFAULT '',                -- free-form, append-mode by default
-    tags_json TEXT NOT NULL DEFAULT '[]',          -- general flexible tags
-    aliases_json TEXT NOT NULL DEFAULT '[]',       -- nicknames / alternate spellings that resolve to this person (name stays the canonical key)
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_interacted_at TEXT,                       -- nullable; updatable by agents but no nudge driven from this
-    created_by_agent TEXT NOT NULL DEFAULT '',     -- e.g. 'claude-code', 'manual'
-    created_by_session_id TEXT NOT NULL DEFAULT '' -- which session/conversation added them
-);
-CREATE INDEX IF NOT EXISTS idx_overseer_people_name_lower
-    ON overseer_people(LOWER(name));
-CREATE INDEX IF NOT EXISTS idx_overseer_people_created
-    ON overseer_people(created_at);
-
--- Many-to-many junction. role is optional free text
--- ('collaborator', 'subject', 'mentor', 'inspiration', 'source').
-CREATE TABLE IF NOT EXISTS project_people (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project TEXT NOT NULL,                         -- matches imported_sessions.project
-    person_id INTEGER NOT NULL,
-    role TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_by_agent TEXT NOT NULL DEFAULT '',
-    UNIQUE(project, person_id),                    -- one link per (project, person)
-    FOREIGN KEY (person_id) REFERENCES overseer_people(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_project_people_project
-    ON project_people(project);
-
--- person_notes (2026-06-13 taxonomy build): structured, queryable notes
--- ABOUT a person, carrying the locked taxonomy axes. The free-form
--- overseer_people.notes blob stays for back-compat; this is the channel
--- Tory uses to add interaction history / context / preferences, and the
--- one external AIs query along axes. Integrity pair = provenance+modality.
-CREATE TABLE IF NOT EXISTS person_notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    person_id INTEGER NOT NULL,
-    body TEXT NOT NULL,
-    provenance TEXT NOT NULL DEFAULT 'overseer',   -- WHO authored: owner-voice/owner-typed/overseer/ai-convo/import
-    modality TEXT NOT NULL DEFAULT 'statement',     -- claim TYPE: observation/statement/inference/hypothesis/value-judgment/external-claim/pattern
-    note_kind TEXT NOT NULL DEFAULT 'context',      -- lens-ish: context/interaction/preference/commitment/fact
-    superseded_by INTEGER,                          -- stance/supersession edge: NULL = live; else the note id that replaced this
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    local_created_at TEXT,                          -- time axis: local-with-offset per the locked tz rule
-    created_by_agent TEXT NOT NULL DEFAULT '',
-    created_by_session_id TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY (person_id) REFERENCES overseer_people(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_person_notes_person
-    ON person_notes(person_id);
-CREATE INDEX IF NOT EXISTS idx_person_notes_live
-    ON person_notes(person_id, superseded_by);
+-- OPT-10 Phase C sub-slice 1 (2026-07-27): the People pillar DDL
+-- (overseer_people, project_people, person_notes, phone_contacts and
+-- their indexes) moved OUT of this script. The tables physically live
+-- in cortex.db now (R5: the user's relationship memory belongs in the
+-- user's ledger); people_pillar.py owns the schema, the one-time move,
+-- and the fresh-install creation, and OverseerDB reaches the tables
+-- through its read-write `userdb` attach. Re-declaring them here would
+-- recreate empty shadowing copies in overseer.db main on every boot.
 
 -- ── Tech skills + rules (2026-07-12) ─────────────────────────────
 -- A living portfolio of the user's technical skills and a decisions
@@ -1065,8 +1008,6 @@ CREATE TABLE IF NOT EXISTS ambient_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_ambient_obs_at
     ON ambient_observations(observed_at);
-CREATE INDEX IF NOT EXISTS idx_project_people_person
-    ON project_people(person_id);
 
 -- ─ Slice 8: file attachments on chat ────────────────────────────
 -- One row per file attached to a chat_messages row (typically the
@@ -1418,6 +1359,15 @@ class OverseerDB(CortexDB):
     ingest, future consolidation loop) calls helpers through this.
     """
 
+    def _attach_overseer_readonly(self):
+        """No-op override. The inherited Phase B read path attaches
+        overseer.db read-only, but on THIS class main already IS
+        overseer.db: the self attach is useless and, worse, its stale
+        read-only schema hijacks unqualified name resolution after the
+        Phase C people renames (writes then fail 'readonly database').
+        The Phase B attach belongs to the real cortex.db connection."""
+        self._overseer_attached = False
+
     def __init__(self, db_path):
         super().__init__(db_path)
         # Slice 3f.5 #4 fix: overseer.db is shared across the loop
@@ -1488,6 +1438,34 @@ class OverseerDB(CortexDB):
         self._pull_ro_conn = None
         self._pull_has_local = False
         self._attach_gateway_db()
+        # OPT-10 Phase C sub-slice 1: the People pillar lives in
+        # cortex.db. Attach the user's ledger READ-WRITE as `userdb`
+        # (this process is the single writer of both files; WAL handles
+        # the two connections) and run the pillar's fresh-or-move. Runs
+        # LAST on purpose: post-move, unqualified people statements
+        # resolve main -> overseer(self) -> gateway -> userdb, and only
+        # userdb holds the live tables.
+        self.people_pillar_report = {"state": "unattached"}
+        self._attach_userdb_and_ensure_people()
+
+    def _attach_userdb_and_ensure_people(self):
+        try:
+            path = os.environ.get("CORTEX_DB_PATH", "").strip()
+            if not path:
+                from config import CORTEX_DB_PATH as _cdp
+                path = _cdp
+            self._conn.execute("ATTACH DATABASE ? AS userdb", (path,))
+            import people_pillar
+            self.people_pillar_report = people_pillar.ensure(
+                self._conn, log=log.info)
+        except Exception as e:
+            log.warning("people_pillar attach/ensure failed: %s", e)
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            self.people_pillar_report = {"state": "error",
+                                         "error": str(e)[:200]}
 
     def _attach_gateway_db(self):
         """Best-effort read-only union connection over local + gateway
@@ -2028,6 +2006,12 @@ class OverseerDB(CortexDB):
         # existing .25 install.
         cols = {r[1] for r in self._conn.execute(
             "PRAGMA table_info(overseer_people)").fetchall()}
+        if not cols:
+            # OPT-10 Phase C: the People pillar no longer lives in this
+            # file (moved to cortex.db; people_pillar.py owns it). No
+            # main-schema table means nothing to migrate here.
+            self._migrate_8_chat_files()
+            return
         if "merged_into_id" not in cols:
             self._conn.execute(
                 "ALTER TABLE overseer_people ADD COLUMN "

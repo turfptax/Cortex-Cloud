@@ -32,7 +32,6 @@ const META_FIELDS = new Set(['id', 'created_at', 'last_touched', 'source', 'sess
 function getPrimaryKey(table: string): string {
   if (table === 'projects' || table === 'organizations') return 'tag'
   if (table === 'computers') return 'hostname'
-  if (table === 'people') return 'id'
   return 'id'
 }
 

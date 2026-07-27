@@ -75,12 +75,6 @@ notes = _t("notes",
     sa.Column("source", sa.String(40)), sa.Column("session_id", sa.String(80)),
     sa.Column("created_at", sa.DateTime))
 
-people = _t("people",
-    sa.Column("id", sa.String(80), primary_key=True), sa.Column("name", sa.String(200)),
-    sa.Column("role", sa.String(120)), sa.Column("email", sa.String(200)),
-    sa.Column("projects", sa.String(400)), sa.Column("notes", sa.Text),
-    sa.Column("created_at", sa.DateTime))
-
 time_entries = _t("time_entries",
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("project_tag", sa.String(80)), sa.Column("org_tag", sa.String(80)),
@@ -125,7 +119,7 @@ human_journal_entries = _t("human_journal_entries",
     sa.Column("text", sa.Text), sa.Column("entry_type", sa.String(40)),
     sa.Column("created_at", sa.DateTime))
 
-ALL_TABLES = [organizations, tasks, projects, notes, people, time_entries,
+ALL_TABLES = [organizations, tasks, projects, notes, time_entries,
               summaries_gist, summaries_theme,
               open_questions, patterns, temporal_narratives, overseer_journal,
               human_journal_entries]
@@ -156,14 +150,6 @@ PROJECTS = [
     ("demo-loomlang", "LoomLang", "paused", 3, "A tiny DSL that compiles weaving drafts into loom instructions; pattern preview renderer in the browser.", "software", "", "https://example.com/robin/loomlang", 16.5, ""),
     ("demo-solar-kiln", "Solar Kiln", "active", 2, "Passive solar wood-drying kiln with a firmware-controlled vent and moisture sensor array for the workshop.", "hardware", "demo-openshore", "", 33.0, "Dev Osei"),
     ("demo-harbor-notes", "Harbor Notes", "idea", 4, "A local-first note app for field research: offline capture, tags, and sync when back on wifi.", "software", "", "", 6.0, "Mara Quinn"),
-]
-
-PEOPLE = [
-    ("demo-mara-quinn", "Mara Quinn", "collaborator", "mara@example.com", "demo-tidegauge,demo-harbor-notes", "Firmware + dashboard work on TideGauge; design sounding board."),
-    ("demo-dev-osei", "Dev Osei", "collaborator", "dev@example.com", "demo-tidegauge,demo-solar-kiln", "Mechanical + enclosure design; runs the workshop."),
-    ("demo-lena-park", "Lena Park", "mentor", "lena@example.com", "demo-mycelium-panels", "Materials scientist advising on mycelium substrate + acoustics testing."),
-    ("demo-toby-reed", "Toby Reed", "client", "toby@example.com", "demo-solar-kiln", "Furniture maker who wants the kiln for air-drying hardwood."),
-    ("demo-iris-fenn", "Iris Fenn", "friend", "iris@example.com", "", "Runs the local makerspace; helps with grant connections."),
 ]
 
 # Gist fragments - each becomes one summaries_gist row, keyword-rich for search.
@@ -253,7 +239,6 @@ def _seed(engine):
         c.execute(sa.delete(organizations).where(organizations.c.tag.like("demo-%")))
         c.execute(sa.delete(tasks).where(tasks.c.uuid.like("demo-task-%")))
         c.execute(sa.delete(projects).where(projects.c.tag.like("demo-%")))
-        c.execute(sa.delete(people).where(people.c.id.like("demo-%")))
         c.execute(sa.delete(notes).where(notes.c.source == "demo"))
         c.execute(sa.delete(time_entries).where(time_entries.c.source == "demo"))
         for t in (summaries_gist, summaries_theme, open_questions, patterns,
@@ -277,10 +262,6 @@ def _seed(engine):
                 tag=tag, name=name, status=status, priority=pri, description=desc,
                 category=cat, org_tag=org, github_url=gh, total_hours=hrs,
                 collaborators=collab, last_touched=D(-3 - i), created_at=D(-85 + i)))
-        for pid, nm, role, em, projs, nt in PEOPLE:
-            c.execute(sa.insert(people).values(
-                id=pid, name=nm, role=role, email=em, projects=projs, notes=nt,
-                created_at=D(-80)))
         note_projects = ["demo-tidegauge", "demo-mycelium-panels", "demo-solar-kiln",
                          "demo-loomlang", "demo-harbor-notes"]
         for i, g in enumerate(GISTS):
@@ -311,7 +292,7 @@ def _seed(engine):
         for text, et in HUMAN_JOURNAL:
             c.execute(sa.insert(human_journal_entries).values(text=text, entry_type=et, created_at=D(-15)))
     print(f"seeded: {len(ORGS)} orgs, {len(TASKS)} tasks, "
-          f"{len(PROJECTS)} projects, {len(PEOPLE)} people, {len(GISTS)} notes+gists, "
+          f"{len(PROJECTS)} projects, {len(GISTS)} notes+gists, "
           f"{len(THEMES)} themes, {len(QUESTIONS)} questions, {len(PATTERNS)} patterns, "
           f"{len(NARRATIVES)} narratives, {len(JOURNAL)} journal, {len(HUMAN_JOURNAL)} human-journal")
 
