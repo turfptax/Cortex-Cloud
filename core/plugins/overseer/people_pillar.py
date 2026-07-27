@@ -372,6 +372,102 @@ def _count(conn, schema, table):
         "SELECT COUNT(*) FROM {}.{}".format(schema, table)).fetchone()[0]
 
 
+# ── Phase C sub-slice 5a: FK detachment ───────────────────────────────
+# summaries_gist is the first table whose FOREIGN KEYs cross the move
+# boundary in BOTH directions. These three bookkeeping tables stay in
+# overseer.db (AI process state, R5) but reference summaries_gist, and
+# ALTER TABLE RENAME rewrites a child's REFERENCES clause in place: the
+# moment the gist table is renamed away, their inserts fail against a
+# frozen archive, and they dangle when it is dropped. Detaching the
+# edge first is its own reversible step: cross-database FKs never
+# enforce anyway, so gist_id becomes a soft reference exactly like
+# every other cross-ledger id in the system.
+FK_CHILDREN = ("processed_sessions", "processed_imported_sessions",
+               "automation_rollups")
+
+_GIST_FK_RE = re.compile(
+    r",?\s*FOREIGN\s+KEY\s*\(\s*gist_id\s*\)\s*REFERENCES\s+"
+    r"summaries_gist\s*\([^)]*\)(\s+ON\s+DELETE\s+\w+)?",
+    re.IGNORECASE)
+
+
+def _strip_gist_fk(sql):
+    """Remove the summaries_gist FK clause, leaving every other clause
+    (columns, other FOREIGN KEYs, UNIQUE) byte-identical. Returns None
+    when there is nothing to strip."""
+    out = _GIST_FK_RE.sub("", sql, count=1)
+    if out == sql:
+        return None
+    # A stripped trailing clause can leave "...,\n)" behind.
+    return re.sub(r",(\s*)\)\s*$", r"\1)", out.rstrip().rstrip(";"))
+
+
+def detach_gist_fks(conn, log=None):
+    """Rebuild each FK child without its summaries_gist edge, using
+    SQLite's documented table-rebuild procedure. Idempotent (a table
+    whose SQL no longer carries the clause is skipped), parity-gated,
+    and each table is its own transaction so a crash re-runs cleanly."""
+    report = {"detached": [], "skipped": []}
+    for table in FK_CHILDREN:
+        row = conn.execute(
+            "SELECT sql FROM main.sqlite_master WHERE type='table' "
+            "AND name=?", (table,)).fetchone()
+        if row is None:
+            report["skipped"].append(table)
+            continue
+        stripped = _strip_gist_fk(row[0])
+        if stripped is None:
+            report["skipped"].append(table)
+            continue
+        extras = [r[0] for r in conn.execute(
+            "SELECT sql FROM main.sqlite_master WHERE type IN "
+            "('index', 'trigger') AND tbl_name=? AND sql IS NOT NULL",
+            (table,)).fetchall()]
+        before = _count(conn, "main", table)
+        tmp = "_fkdetach_" + table
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(re.sub(
+                r"(CREATE\s+TABLE\s+)([\"\w]+)", r"\1" + tmp, stripped,
+                count=1, flags=re.IGNORECASE))
+            conn.execute("INSERT INTO {} SELECT * FROM {}".format(tmp, table))
+            after = conn.execute(
+                "SELECT COUNT(*) FROM {}".format(tmp)).fetchone()[0]
+            if after != before:
+                conn.rollback()
+                if log:
+                    log("fk_detach: %s parity %d != %d, aborted"
+                        % (table, before, after))
+                report.setdefault("failed", []).append(table)
+                continue
+            conn.execute("DROP TABLE {}".format(table))
+            conn.execute("ALTER TABLE {} RENAME TO {}".format(tmp, table))
+            for sql in extras:
+                conn.execute(sql)
+            bad = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                conn.rollback()
+                if log:
+                    log("fk_detach: %s foreign_key_check dirty, aborted"
+                        % table)
+                report.setdefault("failed", []).append(table)
+                continue
+            conn.commit()
+            report["detached"].append(table)
+            if log:
+                log("fk_detach: %s rebuilt without the summaries_gist FK "
+                    "(%d rows)" % (table, before))
+        except Exception as e:
+            conn.rollback()
+            if log:
+                log("fk_detach: %s failed (%s); table untouched" % (table, e))
+            report.setdefault("failed", []).append(table)
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+    return report
+
+
 def _move_group(conn, tables, fresh_sqls, log, label):
     """The hardened move recipe for one table group.
 
@@ -504,6 +600,9 @@ def ensure(conn, log=None):
         conn, SUMMARY_TABLES,
         list(SUMMARY_FRESH_DDL) + _fresh_triggers(_SUMMARY_LOCAL_PAIRS),
         log, "summaries_move")
+    # Sub-slice 5a: detach the gist FK edges so 5b can move the table
+    # without freezing these children against a renamed archive.
+    report["fk_detach"] = detach_gist_fks(conn, log)
     # Legacy retirement is sealed separately: a failure here reports
     # but never unwinds the completed moves.
     report["absorbed"] = 0
