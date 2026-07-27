@@ -208,7 +208,10 @@ class SyncPlugin(Plugin):
 
     @staticmethod
     def _connect(path):
-        con = sqlite3.connect(str(path), timeout=5.0)
+        # uri=True so callers can ATTACH 'file:...?mode=ro' (the
+        # cross-database gist_nature join). A plain path stays a plain
+        # path under SQLITE_OPEN_URI.
+        con = sqlite3.connect(str(path), timeout=5.0, uri=True)
         con.row_factory = sqlite3.Row
         return con
 
@@ -500,10 +503,27 @@ class SyncPlugin(Plugin):
         return max(1, min(n, cap))
 
     def _pull_gist_nature(self, payload):
-        """Virtual pull kind: per-gist memory weight from session_nature."""
+        """Virtual pull kind: per-gist memory weight from session_nature.
+
+        OPT-10 Phase C sub-slice 5b: this JOINs summaries_gist (moved to
+        cortex.db) against session_nature (stays, AI process state), so
+        it needs BOTH databases on one connection. The _pull_source_conn
+        resolver is not enough here: it picks one file or the other.
+        Attaching the core ledger read-only lets the unqualified join
+        resolve across both, and a not-yet-moved self-host still works
+        because the local table wins main-first.
+        """
         last_id = self._cursor_id(payload, "gn")
         limit = self._limit(payload)
         con = self._connect(OVERSEER_DB)
+        try:
+            core_path = self._core_db_path()
+            if core_path and os.path.exists(str(core_path)):
+                con.execute(
+                    "ATTACH DATABASE ? AS userdb",
+                    (Path(str(core_path)).resolve().as_uri() + "?mode=ro",))
+        except Exception as e:
+            log.warning("gist_nature: core attach failed: %s", e)
         try:
             rows = [dict(r) for r in con.execute(GIST_NATURE_SQL, (last_id, limit))]
             more = False

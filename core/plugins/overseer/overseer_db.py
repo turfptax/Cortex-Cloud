@@ -40,25 +40,11 @@ log = logging.getLogger("plugin.overseer.db")
 OVERSEER_SCHEMA_SQL = """
 -- ─ Six interpretive sections ────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS summaries_gist (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    period_label TEXT DEFAULT '',          -- "2026-04-16", "week of 2026-04-13", etc.
-    period_start TEXT,                     -- ISO; nullable for ad-hoc gists
-    period_end TEXT,
-    body TEXT NOT NULL,                    -- the one line
-    confidence TEXT DEFAULT 'med',         -- high | med | low
-    raw_pointer_id INTEGER,                -- → raw_pointers.id (nullable)
-    prompt_version_id INTEGER,             -- → gist_prompts.id (Phase 1d, 2026-05-27)
-    modality TEXT,                         -- taxonomy Modality axis (integrity pair): observation|statement|inference|hypothesis|value-judgment|external-claim|pattern
-    lens TEXT,                             -- taxonomy Lens axis: comma-sep of the 6 controlled lenses, or 'none' (2026-06-13)
-    axis_processed_at TEXT,                -- when the axis reprocess stamped modality+lens (NULL = not yet); resumability marker
-    project_tag TEXT DEFAULT '',           -- OPT-0: canonical project this gist belongs to ('' = none/unknown); existing installs get it via _migrate_opt0_gist_project
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (raw_pointer_id) REFERENCES raw_pointers(id),
-    FOREIGN KEY (prompt_version_id) REFERENCES gist_prompts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_gist_created ON summaries_gist(created_at);
-CREATE INDEX IF NOT EXISTS idx_gist_period ON summaries_gist(period_label);
+-- summaries_gist moved to cortex.db in OPT-10 Phase C sub-slice 5b
+-- (2026-07-27): per-session gists are the user's memory. Its FK
+-- parents (raw_pointers, gist_prompts) and the vec0 vector index
+-- stay here as AI process state. people_pillar.py owns the schema
+-- and the move; re-declaring it would shadow the moved table.
 
 CREATE TABLE IF NOT EXISTS summaries_theme (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2383,11 +2369,13 @@ class OverseerDB(CortexDB):
 
         Idempotent - safe to re-run.
         """
-        # 1. ALTER summaries_gist for existing installs.
+        # 1. ALTER summaries_gist for existing installs. OPT-10 Phase C
+        # sub-slice 5b: an empty column set means the table already
+        # moved to cortex.db, so there is nothing to retrofit here.
         cols = {r[1] for r in self._conn.execute(
             "PRAGMA table_info(summaries_gist)"
         ).fetchall()}
-        if "prompt_version_id" not in cols:
+        if cols and "prompt_version_id" not in cols:
             self._conn.execute(
                 "ALTER TABLE summaries_gist ADD COLUMN "
                 "prompt_version_id INTEGER"
@@ -2572,7 +2560,7 @@ class OverseerDB(CortexDB):
         """
         cols = {r[1] for r in self._conn.execute(
             "PRAGMA table_info(summaries_gist)").fetchall()}
-        for col, decl in (
+        for col, decl in () if not cols else (
             ("modality", "TEXT"),
             ("lens", "TEXT"),
             ("axis_processed_at", "TEXT"),
