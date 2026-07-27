@@ -17,6 +17,7 @@ interface Connection {
   last_used_at: string | null
   granted_at: string | null
   token_status: string | null
+  agent_handle: string | null
 }
 
 function levelLabel(level: ConnectionLevel): string {
@@ -56,6 +57,8 @@ export function ConnectionsCard() {
   const [connections, setConnections] = useState<Connection[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  // OPT-8: optional per-connection agent handle typed before Approve.
+  const [handleDrafts, setHandleDrafts] = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
     setError(null)
@@ -77,14 +80,22 @@ export function ConnectionsCard() {
   const approve = async (id: string) => {
     setBusyId(id)
     setError(null)
+    const handle = (handleDrafts[id] ?? '').trim().toLowerCase()
     try {
       await apiFetch(`/connections/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ level: 'full', always: true }),
+        body: JSON.stringify({
+          level: 'full',
+          always: true,
+          ...(handle ? { agent_handle: handle } : {}),
+        }),
       })
       await load()
-    } catch {
-      setError('Approve failed')
+    } catch (e) {
+      // Surface the server's reason (invalid/reserved handle, core down)
+      // instead of a generic failure.
+      const msg = e instanceof Error ? e.message : ''
+      setError(msg.includes('handle') ? msg : 'Approve failed')
     } finally {
       setBusyId(null)
     }
@@ -162,6 +173,11 @@ export function ConnectionsCard() {
                     {c.name || c.client_id}
                   </span>
                   <StatusBadge status={c.status} />
+                  {c.agent_handle && (
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-accent/15 text-accent">
+                      @{c.agent_handle}
+                    </span>
+                  )}
                 </div>
                 {c.redirect_host && (
                   <p className="text-xs text-text-muted truncate">{c.redirect_host}</p>
@@ -169,6 +185,18 @@ export function ConnectionsCard() {
                 <p className="text-xs text-text-secondary mt-0.5">
                   {levelLabel(c.level)}
                 </p>
+                {c.status === 'pending' && (
+                  <input
+                    type="text"
+                    value={handleDrafts[c.id] ?? ''}
+                    onChange={(e) =>
+                      setHandleDrafts((d) => ({ ...d, [c.id]: e.target.value }))
+                    }
+                    placeholder="Agent handle (optional, e.g. claude-code)"
+                    maxLength={32}
+                    className="mt-2 w-full max-w-xs px-2 py-1 text-xs bg-surface border border-border rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
+                  />
+                )}
               </div>
               <div className="shrink-0">
                 {c.status === 'pending' && (

@@ -129,6 +129,16 @@ def upsert_task(values: dict):
     return db.insert("tasks", values)
 
 
+def assign_agent(payload: dict) -> dict:
+    """OPT-8: owner-assigned agent handle at connection approval. The
+    agents table is deliberately NOT in the generic upsert whitelist
+    (OPT_PLAN 7.2 V2-FIX: no relay table joins WRITABLE_TABLES before
+    the OPT-11 write contract), so the write goes through the core's
+    dedicated guarded agent_assign command. Requires the co-located
+    core; grants.approve skips the call in legacy single-file mode."""
+    return _rsp_json(_cmd("agent_assign", payload), "agent_assign")
+
+
 def patch_project(tag: str, fields: dict) -> None:
     """Partial update. The core's upsert_row updates ONLY the supplied
     columns when the PK row exists (never CMD:project_upsert here - that

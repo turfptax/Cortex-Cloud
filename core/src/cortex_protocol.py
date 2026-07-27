@@ -189,6 +189,7 @@ class CortexProtocol:
             "seed_project_aliases": self._cmd_seed_project_aliases,
             "migrate_reminders_to_tasks": self._cmd_migrate_reminders,
             "merge_project": self._cmd_merge_project,
+            "agent_assign": self._cmd_agent_assign,
             "delete": self._cmd_delete,
             "table_counts": self._cmd_table_counts,
         }
@@ -421,7 +422,11 @@ class CortexProtocol:
                          "projects", "computers", "people", "files",
                          "organizations", "org_summaries", "tasks",
                          "project_aliases", "time_entries",
-                         "training_examples", "training_ledger"):
+                         "training_examples", "training_ledger",
+                         # OPT-8: relay tables are read-only here; they
+                         # deliberately do NOT join WRITABLE_TABLES until
+                         # the OPT-11 write contract (OPT_PLAN 7.2 V2-FIX).
+                         "agents", "agent_messages", "agent_cursors"):
             # NOTE: pet_state/pet_interactions live in the cortex-pet
             # sister repo's pet.db (Slice 2c2d schema move; Slice 11 plugin
             # extraction). Use /plugins/pet/history or /plugins/pet/status
@@ -479,6 +484,30 @@ class CortexProtocol:
             return "ERR:merge_project:" + str(e)
         return "RSP:merge_project:" + json.dumps(
             report, separators=(",", ":"), default=str)
+
+    def _cmd_agent_assign(self, payload, context):
+        """OPT-8: owner-assigned agent handle (OPT_PLAN 7.2 identity
+        binding). Reachable only through the service-token /api/cmd
+        surface; the gateway's owner-gated connection-approval flow is
+        the caller. The relay tables themselves stay OUT of the generic
+        upsert/delete whitelist until the OPT-11 write contract, so this
+        dedicated guarded command is the ONLY write path into agents."""
+        data = json.loads(payload) if payload else {}
+        if not data.get("handle"):
+            return "ERR:agent_assign:missing handle field"
+        try:
+            row = self._db.assign_agent_handle(
+                data["handle"],
+                display_name=data.get("display_name", ""),
+                kind=data.get("kind", "loopback"),
+                bind_kind=data.get("bind_kind", "grant"),
+                bind_value=str(data.get("bind_value", "")),
+                description=data.get("description", ""),
+            )
+        except ValueError as e:
+            return "ERR:agent_assign:" + str(e)
+        return "RSP:agent_assign:" + json.dumps(
+            row, separators=(",", ":"), default=str)
 
     def _cmd_migrate_reminders(self, payload, context):
         """OPT-3: one-time reminder-notes -> tasks migration (idempotent;

@@ -194,6 +194,10 @@ connector_grants = sa.Table(
     sa.Column("granted_by", sa.String(200)),
     sa.Column("updated_at", sa.DateTime, server_default=NOW),
     sa.Column("note", sa.String(400)),
+    # OPT-8: owner-assigned agent handle (OPT_PLAN 7.2 identity binding).
+    # Set at approval; mirrors an agents row in cortex.db written through
+    # the core's guarded agent_assign command. NULL = no relay identity.
+    sa.Column("agent_handle", sa.String(64)),
 )
 
 # The gateway's OWN pull-event log (connector reads through /v1 + MCP).
@@ -263,6 +267,7 @@ def init_schema() -> None:
     global _migrated
     if not _migrated:
         _ensure_column("gateway_tokens", "client_id", "VARCHAR(80)")
+        _ensure_column("connector_grants", "agent_handle", "VARCHAR(64)")
         _migrated = True
 
 

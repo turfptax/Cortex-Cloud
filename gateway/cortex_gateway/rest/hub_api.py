@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from .. import grants
 from ..config import get_settings
+from ..core_client import CoreWriteError
 from ..identity import owner_ok
 
 router = APIRouter(prefix="/api", tags=["hub-api"])
@@ -221,6 +222,7 @@ async def health():
 class _ApproveConnIn(BaseModel):
     level: str = "full"          # "none" | "full"
     always: bool = True          # web approvals default to durable
+    agent_handle: str = ""       # OPT-8: owner-assigned relay identity (optional)
 
 
 @router.get("/connections")
@@ -232,12 +234,17 @@ def api_list_connections(status: str = ""):
 @router.post("/connections/{grant_id}/approve")
 def api_approve_connection(grant_id: int, body: _ApproveConnIn):
     """Approve (or change the level of) a connection. Grants read, and, at
-    level=full, write. Immediate: the corpus gate consults it on every call."""
+    level=full, write. Immediate: the corpus gate consults it on every call.
+    An optional agent_handle assigns the connection's relay identity
+    (OPT-8); a failed corpus write aborts the approval (502, retry)."""
     try:
         out = grants.approve(grant_id, body.level, always=body.always,
-                             by="web-owner")
+                             by="web-owner",
+                             agent_handle=body.agent_handle or None)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except CoreWriteError as e:
+        raise HTTPException(502, f"agent handle not assigned: {e}")
     if out is None:
         raise HTTPException(404, "connection not found")
     return out

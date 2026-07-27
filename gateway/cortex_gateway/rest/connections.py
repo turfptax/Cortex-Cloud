@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from .. import grants
 from ..auth import Principal, require_scope
+from ..core_client import CoreWriteError
 
 router = APIRouter(prefix="/v1/connections", tags=["connections"])
 
@@ -22,6 +23,7 @@ _app = require_scope("app")
 class ApproveIn(BaseModel):
     level: str = "full"          # "none" | "full"
     always: bool = False         # also set approval_policy=always
+    agent_handle: str = ""       # OPT-8: owner-assigned relay identity (optional)
 
 
 class PolicyIn(BaseModel):
@@ -45,11 +47,17 @@ def get_connection(grant_id: int, _: Principal = Depends(_app)):
 @router.post("/{grant_id}/approve")
 def approve_connection(grant_id: int, body: ApproveIn, p: Principal = Depends(_app)):
     """Confirm a pending connection (or change an active one's level). Sets
-    status=active + level; always=true also sets approval_policy=always."""
+    status=active + level; always=true also sets approval_policy=always.
+    An optional agent_handle assigns the connection's relay identity
+    (OPT-8); a failed corpus write aborts the approval (502, retry)."""
     try:
-        out = grants.approve(grant_id, body.level, always=body.always, by=p.name)
+        out = grants.approve(grant_id, body.level, always=body.always,
+                             by=p.name,
+                             agent_handle=body.agent_handle or None)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except CoreWriteError as e:
+        raise HTTPException(502, f"agent handle not assigned: {e}")
     if out is None:
         raise HTTPException(404, "connection not found")
     return out
