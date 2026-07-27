@@ -7,15 +7,28 @@ See docs/CONNECTOR_GRANTS_DESIGN.md.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from . import db
+from . import corpus_writes, db
 from .auth import Principal
 from .config import get_settings
 
 LEVELS = {"none", "full"}          # v1; "work"/"personal" are future
 POLICIES = {"ask", "always"}
+
+# ── OPT-8 agent identity (OPT_PLAN 7.2) ───────────────────────────────
+# Loopback CLI connectors NEVER auto-bind (dedupe_connections deliberately
+# never collapses loopback registrations, and redirect_host is localhost
+# for every local client, so no durable server-side key exists). Instead
+# the OWNER assigns a handle at connection approval; until then a
+# connector has no relay identity and no relay access. The handle names
+# the ROLE, not the session. Validation mirrors the core's
+# assign_agent_handle so bad input fails fast with a 400 here.
+HANDLE_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,31}")
+RESERVED_HANDLES = {"overseer", "tory", "desktop-agent"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def _now() -> datetime:
@@ -199,6 +212,7 @@ def _shape(g: dict) -> dict:
         "granted_at": str(g.get("granted_at") or "") or None,
         "token_status": ("revoked" if tok and tok.get("revoked_at")
                          else "active" if tok else "none"),
+        "agent_handle": g.get("agent_handle") or None,
     }
 
 
@@ -217,15 +231,55 @@ def get_by_id(grant_id: int) -> dict | None:
     return _shape(g) if g else None
 
 
+def _validated_handle(handle: str) -> str:
+    h = (handle or "").strip().lower()
+    if not HANDLE_RE.fullmatch(h):
+        raise ValueError(
+            f"invalid agent handle {handle!r}: 2-32 chars, lowercase "
+            "letters, digits, hyphens")
+    if h in RESERVED_HANDLES:
+        raise ValueError(f"agent handle '{h}' is reserved")
+    return h
+
+
+def _assign_agent(handle: str, g: dict) -> None:
+    """Bind the handle to this connection in the corpus agents table
+    through the core's guarded agent_assign command (the agents table is
+    NOT in the generic upsert whitelist; OPT_PLAN 7.2 V2-FIX). Runs
+    BEFORE the grant flips active so a failed corpus write aborts the
+    whole approval and the owner just retries. Legacy single-file mode
+    has no co-located core; the handle still lands on the grant row so
+    the UI shows it, and the corpus row ships with the cloud shape."""
+    if not corpus_writes.routed():
+        return
+    host = (g.get("redirect_host") or "").strip().lower()
+    corpus_writes.assign_agent({
+        "handle": handle,
+        "display_name": g.get("name") or "",
+        "kind": "loopback" if host in _LOOPBACK_HOSTS else "connector",
+        "bind_kind": "grant",
+        "bind_value": str(g["id"]),
+        "description": "Connection: {} ({})".format(
+            g.get("name") or g.get("client_id"), host or "no host"),
+    })
+
+
 def approve(grant_id: int, level: str, always: bool = False,
-            by: str | None = None) -> dict | None:
+            by: str | None = None,
+            agent_handle: str | None = None) -> dict | None:
     if level not in LEVELS:
         raise ValueError(f"invalid level: {level} (valid: {sorted(LEVELS)})")
-    g = db.fetchone("SELECT client_id FROM connector_grants WHERE id = :i", {"i": grant_id})
+    g = db.fetchone("SELECT * FROM connector_grants WHERE id = :i", {"i": grant_id})
     if not g:
         return None
+    handle = None
+    if agent_handle:
+        handle = _validated_handle(agent_handle)
+        _assign_agent(handle, g)
     updates = {"level": level, "status": "active", "granted_at": _now(),
                "granted_by": by, "updated_at": _now()}
+    if handle:
+        updates["agent_handle"] = handle
     if always:
         updates["approval_policy"] = "always"
     _update(g["client_id"], updates)

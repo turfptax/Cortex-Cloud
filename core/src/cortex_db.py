@@ -16,6 +16,7 @@ All timestamps are ISO 8601 UTC via SQLite datetime('now').
 
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -241,6 +242,60 @@ CREATE TABLE IF NOT EXISTS training_ledger (
     value TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── OPT-8: agent comms skeleton (OPT_PLAN.md section 7) ─────
+-- R5: relay messages are inter-agent traffic ABOUT the user's work,
+-- so they are the user's data with multiple authors and all three
+-- tables live in cortex.db; agent_cursors co-locates for the shared
+-- totally-ordered id sequence and transactional ack. SKELETON ONLY:
+-- no send/inbox/thread tools exist until OPT-11 (gated on a separate
+-- owner go), and none of these tables joins WRITABLE_TABLES until
+-- the write contract that resolves from_agent server-side ships with
+-- it (binding invariant, OPT_PLAN 7.3). Until then the tables are
+-- browsable via CMD:query, empty, and unwritable from any
+-- connector-reachable surface.
+CREATE TABLE IF NOT EXISTS agents (
+    handle TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',       -- builtin | service | loopback | connector
+    bind_kind TEXT NOT NULL DEFAULT '',  -- builtin | service_token | grant | client_id
+    bind_value TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,  -- 0 = owner kill switch (7.3)
+    first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- ONE ordered stream; cursors page it
+    msg_uuid TEXT UNIQUE NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',     -- msg_uuid replied to (flat threading)
+    from_agent TEXT NOT NULL,              -- ALWAYS server-resolved from the principal
+    to_target TEXT NOT NULL,               -- <handle> | topic:<name> | broadcast | tory
+    kind TEXT NOT NULL DEFAULT 'status'
+        CHECK (kind IN ('handoff', 'finding', 'request', 'status')),
+    subject TEXT NOT NULL DEFAULT '' CHECK (length(subject) <= 200),
+    body TEXT NOT NULL DEFAULT '' CHECK (length(body) <= 8192),
+    node_type TEXT NOT NULL DEFAULT ''     -- '' = unscoped (discouraged, audit-flagged)
+        CHECK (node_type IN ('org', 'project', 'task', '')),
+    node_key TEXT NOT NULL DEFAULT '',     -- org tag | project tag (alias-resolved) | task uuid
+    sensitivity_tier TEXT NOT NULL DEFAULT '',
+    principal_ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL DEFAULT ''    -- retention GC lands in OPT-11 (status 7d, handoff/finding 90d)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_target ON agent_messages(to_target, id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_node   ON agent_messages(node_type, node_key);
+
+CREATE TABLE IF NOT EXISTS agent_cursors (
+    handle TEXT NOT NULL,
+    stream TEXT NOT NULL,                  -- 'inbox' | 'topic:<name>' | 'broadcast'
+    last_seen_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (handle, stream)
+);
 """
 
 
@@ -254,6 +309,7 @@ class CortexDB:
         self._conn.executescript(SCHEMA_SQL)
         self._migrate_opt2_orgs()
         self._migrate_opt55_task_prompt()
+        self._migrate_opt8_agents()
         self._conn.commit()
         # Slice 9.4.1 (2026-05-16): every timestamp column gets a
         # paired local_<col>_at (ISO with explicit offset) populated
@@ -415,6 +471,70 @@ class CortexDB:
             self._conn.commit()
         except Exception:
             pass  # column already exists
+
+    def _migrate_opt8_agents(self):
+        """OPT-8: seed the built-in agent identities. 'overseer' and
+        'tory' are built-ins; 'desktop-agent' is reserved for the local
+        desktop Agent and binds on the service token. New tables need no
+        column migration; the seeds are idempotent."""
+        for row in (
+            ("overseer", "Overseer", "builtin", "builtin", "",
+             "The Cortex curator loop: writes proposals and summaries."),
+            ("tory", "Tory", "builtin", "builtin", "",
+             "The owner. Messages to 'tory' surface through the Bell "
+             "bridge (OPT-11)."),
+            ("desktop-agent", "Desktop Agent", "service", "service_token",
+             "", "Reserved: the local desktop Agent on the service token."),
+        ):
+            self._conn.execute(
+                "INSERT OR IGNORE INTO agents (handle, display_name, kind, "
+                "bind_kind, bind_value, description) VALUES (?, ?, ?, ?, ?, ?)",
+                row)
+        self._conn.commit()
+
+    # --- Agents (OPT-8 comms skeleton) ---
+
+    # Built-in and reserved handles: never assignable through the
+    # approval flow, so a connector can never inherit them.
+    RESERVED_HANDLES = ("overseer", "tory", "desktop-agent")
+
+    def assign_agent_handle(self, handle, *, display_name="",
+                            kind="loopback", bind_kind="grant",
+                            bind_value="", description=""):
+        """Owner-assigned agent identity (OPT_PLAN 7.2 identity binding).
+        Reached ONLY via the agent_assign command on the service-token
+        /api/cmd surface; the gateway's owner-gated connection-approval
+        flow is the caller, so connectors can neither mint nor claim
+        handles. The handle names the ROLE, not the session: assigning
+        an existing handle re-points bind_value at the newest connection
+        and keeps the identity (all the owner's CLI sessions share one
+        handle deliberately). Returns the resulting agents row."""
+        h = (handle or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,31}", h):
+            raise ValueError(
+                "invalid handle {!r}: 2-32 chars, lowercase letters, "
+                "digits, hyphens".format(handle))
+        if h in self.RESERVED_HANDLES:
+            raise ValueError("handle {!r} is reserved".format(h))
+        if kind not in ("loopback", "connector"):
+            raise ValueError(
+                "invalid kind {!r}: loopback | connector".format(kind))
+        self._conn.execute(
+            "INSERT INTO agents (handle, display_name, kind, bind_kind, "
+            "bind_value, description) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(handle) DO UPDATE SET "
+            "display_name = CASE WHEN excluded.display_name != '' "
+            "THEN excluded.display_name ELSE display_name END, "
+            "kind = excluded.kind, bind_kind = excluded.bind_kind, "
+            "bind_value = excluded.bind_value, "
+            "description = CASE WHEN excluded.description != '' "
+            "THEN excluded.description ELSE description END, "
+            "last_seen = datetime('now')",
+            (h, display_name, kind, bind_kind, str(bind_value), description))
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM agents WHERE handle = ?", (h,)).fetchone()
+        return dict(row)
 
     def valid_org_tags(self):
         return [r[0] for r in self._conn.execute(
@@ -1038,7 +1158,8 @@ class CortexDB:
         tables = ["notes", "activities", "searches", "sessions", "projects",
                   "organizations", "org_summaries", "tasks",
                   "project_aliases", "time_entries", "computers", "people",
-                  "files", "training_examples"]
+                  "files", "training_examples",
+                  "agents", "agent_messages", "agent_cursors"]
         counts = {}
         for t in tables:
             try:
