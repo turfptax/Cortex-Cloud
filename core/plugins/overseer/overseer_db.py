@@ -787,54 +787,10 @@ CREATE INDEX IF NOT EXISTS idx_insight_scans_project
 -- pricing.PRICE_TABLE; 0 if at least one model isn't priced (cost
 -- is then a lower bound). UI can warn when this is 0.
 
-CREATE TABLE IF NOT EXISTS project_summaries (
-    project TEXT PRIMARY KEY,
-    session_count INTEGER NOT NULL DEFAULT 0,
-    total_messages INTEGER NOT NULL DEFAULT 0,
-    total_user_messages INTEGER NOT NULL DEFAULT 0,
-    total_assistant_messages INTEGER NOT NULL DEFAULT 0,
-    tool_use_message_count INTEGER NOT NULL DEFAULT 0,
-    total_minutes INTEGER NOT NULL DEFAULT 0,
-    -- Wall-clock total_minutes (started_at→ended_at) inflates for
-    -- multi-day sessions where the user walked away mid-file. CP1b
-    -- adds active_minutes_total: the sum of inter-message gaps
-    -- under 30min - the actually-meaningful "time spent" number.
-    -- See claude_jsonl._compute_active_minutes.
-    active_minutes_total INTEGER NOT NULL DEFAULT 0,
-    avg_minutes_per_session REAL NOT NULL DEFAULT 0,
-    median_minutes_per_session REAL NOT NULL DEFAULT 0,
-    avg_active_minutes_per_session REAL NOT NULL DEFAULT 0,
-    median_active_minutes_per_session REAL NOT NULL DEFAULT 0,
-    total_tokens_input INTEGER NOT NULL DEFAULT 0,
-    total_tokens_output INTEGER NOT NULL DEFAULT 0,
-    total_tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
-    total_tokens_cache_read INTEGER NOT NULL DEFAULT 0,
-    cost_usd_estimate REAL NOT NULL DEFAULT 0,
-    cost_known_complete INTEGER NOT NULL DEFAULT 1,
-    first_active_at TEXT,
-    last_active_at TEXT,
-    days_active_30 INTEGER NOT NULL DEFAULT 0,
-    days_active_90 INTEGER NOT NULL DEFAULT 0,
-    days_active_lifespan INTEGER NOT NULL DEFAULT 0,
-    top_files_json TEXT NOT NULL DEFAULT '[]',
-    models_used_json TEXT NOT NULL DEFAULT '{}',
-    narrative TEXT NOT NULL DEFAULT '',
-    narrative_updated_at TEXT,
-    narrative_session_count_at_update INTEGER NOT NULL DEFAULT 0,
-    stats_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    -- OPT-4 (R6): sha256 over the project's children (gists + task
-    -- rows). Stamped by the shared narrative generator on regen;
-    -- compared by the loop's fingerprint pass, which sets
-    -- narrative_stale on mismatch. Existing installs get both via
-    -- _migrate_opt4_fingerprint.
-    child_fingerprint TEXT NOT NULL DEFAULT '',
-    narrative_stale INTEGER NOT NULL DEFAULT 0,
-    -- OPT-5.5: gist_prompts.id of the prompt version that produced
-    -- the narrative (0 = pre-library). Stamped by apply_narrative.
-    narrative_prompt_version_id INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_project_summaries_last_active
-    ON project_summaries(last_active_at);
+-- project_summaries moved to cortex.db in OPT-10 Phase C
+-- sub-slice 4 (2026-07-27): per-project rollups + narratives are
+-- user data. people_pillar.py owns the schema and move;
+-- re-declaring here would recreate an empty shadow every boot.
 
 -- ─ Slice 5: temporal narratives (cadence) ───────────────────────
 -- Daily / Weekly / Monthly Sonnet rollups produced by the loop on
@@ -1939,6 +1895,11 @@ class OverseerDB(CortexDB):
         cols = {r[1] for r in self._conn.execute(
             "PRAGMA table_info(project_summaries)"
         ).fetchall()}
+        if not cols:
+            # OPT-10 Phase C: project_summaries no longer lives in this
+            # file (moved to cortex.db; people_pillar.py owns it).
+            self._migrate_5_cadence()
+            return
         for col_name, col_decl in (
             ("active_minutes_total",
              "INTEGER NOT NULL DEFAULT 0"),

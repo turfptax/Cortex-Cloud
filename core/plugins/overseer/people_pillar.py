@@ -42,6 +42,62 @@ JOURNAL_TABLES = ("human_journal_entries",)
 # is application-filled, so no triggers.
 NARRATIVE_TABLES = ("temporal_narratives",)
 
+# Phase C sub-slice 4: per-project rollups + narratives (TEXT PK, so
+# parity is count-only and there is no sqlite_sequence to carry).
+# Four timestamp columns carry localizer trigger pairs.
+SUMMARY_TABLES = ("project_summaries",)
+
+_SUMMARY_LOCAL_PAIRS = (
+    ("project_summaries", "first_active_at"),
+    ("project_summaries", "last_active_at"),
+    ("project_summaries", "narrative_updated_at"),
+    ("project_summaries", "stats_updated_at"),
+)
+
+SUMMARY_FRESH_DDL = (
+    """CREATE TABLE IF NOT EXISTS userdb.project_summaries (
+    project TEXT PRIMARY KEY,
+    session_count INTEGER NOT NULL DEFAULT 0,
+    total_messages INTEGER NOT NULL DEFAULT 0,
+    total_user_messages INTEGER NOT NULL DEFAULT 0,
+    total_assistant_messages INTEGER NOT NULL DEFAULT 0,
+    tool_use_message_count INTEGER NOT NULL DEFAULT 0,
+    total_minutes INTEGER NOT NULL DEFAULT 0,
+    avg_minutes_per_session REAL NOT NULL DEFAULT 0,
+    median_minutes_per_session REAL NOT NULL DEFAULT 0,
+    total_tokens_input INTEGER NOT NULL DEFAULT 0,
+    total_tokens_output INTEGER NOT NULL DEFAULT 0,
+    total_tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
+    total_tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+    cost_usd_estimate REAL NOT NULL DEFAULT 0,
+    cost_known_complete INTEGER NOT NULL DEFAULT 1,
+    first_active_at TEXT,
+    last_active_at TEXT,
+    days_active_30 INTEGER NOT NULL DEFAULT 0,
+    days_active_90 INTEGER NOT NULL DEFAULT 0,
+    days_active_lifespan INTEGER NOT NULL DEFAULT 0,
+    top_files_json TEXT NOT NULL DEFAULT '[]',
+    models_used_json TEXT NOT NULL DEFAULT '{}',
+    narrative TEXT NOT NULL DEFAULT '',
+    narrative_updated_at TEXT,
+    narrative_session_count_at_update INTEGER NOT NULL DEFAULT 0,
+    stats_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    active_minutes_total INTEGER NOT NULL DEFAULT 0,
+    avg_active_minutes_per_session REAL NOT NULL DEFAULT 0,
+    median_active_minutes_per_session REAL NOT NULL DEFAULT 0,
+    narrative_cost_usd REAL NOT NULL DEFAULT 0,
+    local_first_active_at TEXT DEFAULT '',
+    local_last_active_at TEXT DEFAULT '',
+    local_narrative_updated_at TEXT DEFAULT '',
+    local_stats_updated_at TEXT DEFAULT '',
+    child_fingerprint TEXT NOT NULL DEFAULT '',
+    narrative_stale INTEGER NOT NULL DEFAULT 0,
+    narrative_prompt_version_id INTEGER NOT NULL DEFAULT 0
+)""",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_project_summaries_last_active"
+    " ON project_summaries(last_active_at)",
+)
+
 NARRATIVE_FRESH_DDL = (
     """CREATE TABLE IF NOT EXISTS userdb.temporal_narratives (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,12 +240,12 @@ _LOCAL_EXPR = (
 )
 
 
-def _fresh_triggers():
+def _fresh_triggers(pairs=_LOCAL_PAIRS):
     """Localizer-equivalent triggers for the fresh-install path. The
     moved path copies the live trigger SQL verbatim instead; these only
     need to match the localizer's behavior, not its exact text."""
     out = []
-    for table, col in _LOCAL_PAIRS:
+    for table, col in pairs:
         expr = _LOCAL_EXPR.format(c=col)
         out.append(
             "CREATE TRIGGER IF NOT EXISTS userdb.tgr_{t}_local_{c}_ai "
@@ -257,9 +313,17 @@ def _copy_sequence(conn, table):
 
 def _parity(conn, table):
     def stats(schema):
-        return conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(id), 0) FROM {}.{}"
-            .format(schema, table)).fetchone()
+        try:
+            return tuple(conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(id), 0) FROM {}.{}"
+                .format(schema, table)).fetchone())
+        except sqlite3.OperationalError:
+            # TEXT-PK tables (project_summaries) have no id column;
+            # count parity only. rowids are not copy-stable, so they
+            # are useless as a checksum here.
+            return tuple(conn.execute(
+                "SELECT COUNT(*), 0 FROM {}.{}"
+                .format(schema, table)).fetchone())
     return stats("main"), stats("userdb")
 
 
@@ -436,6 +500,10 @@ def ensure(conn, log=None):
     report["narratives"] = _move_group(conn, NARRATIVE_TABLES,
                                        list(NARRATIVE_FRESH_DDL),
                                        log, "narratives_move")
+    report["summaries"] = _move_group(
+        conn, SUMMARY_TABLES,
+        list(SUMMARY_FRESH_DDL) + _fresh_triggers(_SUMMARY_LOCAL_PAIRS),
+        log, "summaries_move")
     # Legacy retirement is sealed separately: a failure here reports
     # but never unwinds the completed moves.
     report["absorbed"] = 0
