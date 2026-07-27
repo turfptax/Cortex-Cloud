@@ -157,6 +157,21 @@ class Settings:
         except ValueError:
             self.oauth_token_ttl = _default_ttl
 
+        # Refresh-token lifetime (default 90d). This is the credential that
+        # keeps a connector alive across access-token expiry, so it is the one
+        # that should be long; the access token above can then be short without
+        # the owner having to re-run the browser consent flow by hand. Rotated
+        # on every use with reuse detection (see refresh.py), so a leaked
+        # refresh token is usable only until the real client next refreshes.
+        # Set GATEWAY_OAUTH_REFRESH_TTL=0 for non-expiring refresh tokens.
+        _default_refresh = 90 * 24 * 3600
+        try:
+            self.oauth_refresh_ttl = int(
+                os.environ.get("GATEWAY_OAUTH_REFRESH_TTL",
+                               str(_default_refresh)))
+        except ValueError:
+            self.oauth_refresh_ttl = _default_refresh
+
         # Trusted-client redirect_uri allowlist. When NON-EMPTY, OAuth dynamic
         # registration and the authorize flow accept ONLY these exact https
         # redirect URIs (e.g. the claude.ai / chatgpt.com connector callbacks),

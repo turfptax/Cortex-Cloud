@@ -58,6 +58,27 @@ def _coerce_expiry(expires_at: str | datetime | None) -> datetime | None:
     return dt
 
 
+def read_expiry(value: str | datetime | None) -> datetime | None:
+    """Read a stored expiry back as an AWARE UTC datetime, ready to compare
+    against now(). Raw-SQL reads hand back a string on SQLite (sa.text carries
+    no column type), so callers outside this module need this rather than
+    assuming a datetime. Returns None for NULL; raises on an unparseable value
+    so an auth gate can fail closed rather than read garbage as 'never'."""
+    if value is None:
+        return None
+    dt = value if isinstance(value, datetime) else _parse_iso(str(value))
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def revoke_for_client(client_id: str) -> int:
+    """Revoke every live access token issued to an OAuth connection."""
+    if not client_id:
+        return 0
+    return db.execute_write(
+        "UPDATE gateway_tokens SET revoked_at = CURRENT_TIMESTAMP "
+        "WHERE client_id = :c AND revoked_at IS NULL", {"c": client_id})
+
+
 def mint(name: str, scopes: str, max_tier: str = "internal",
          category_filter: str | None = None, *, kind: str = "app",
          note: str | None = None,

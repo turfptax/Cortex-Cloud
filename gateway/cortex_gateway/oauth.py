@@ -32,7 +32,7 @@ from urllib.parse import quote, urlparse
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import auth, db, grants
+from . import auth, authlog, db, grants, refresh
 from .config import get_settings
 
 router = APIRouter(tags=["oauth"])
@@ -74,6 +74,14 @@ def _audit(event: str, request: Request, outcome: str, **fields) -> None:
            "ip": _client_ip(request), **fields}
     line = json.dumps(rec, separators=(",", ":"), default=str)
     (log.warning if outcome == "blocked" else log.info)("oauth_audit %s", line)
+
+
+def _fail(request: Request, reason: str, client_id: str = "") -> None:
+    """Record a token-endpoint rejection to the durable auth-failure log, so a
+    connector that stops working leaves evidence that outlives the container."""
+    authlog.record(reason, path=str(request.url.path),
+                   client_id=client_id or None, source_ip=_client_ip(request),
+                   user_agent=request.headers.get("user-agent"))
 
 
 def _require_enabled() -> None:
@@ -188,7 +196,7 @@ def as_metadata(request: Request):
         "token_endpoint": f"{base}/oauth/token",
         "registration_endpoint": f"{base}/oauth/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": sorted(_ALLOWED_SCOPES),
@@ -267,7 +275,7 @@ async def register(request: Request):
         "client_name": client_name,
         "redirect_uris": redirect_uris,
         "token_endpoint_auth_method": "none",
-        "grant_types": ["authorization_code"],
+        "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
     }, status_code=201)
 
@@ -404,18 +412,31 @@ def _record_connection(request: Request, client_id: str, scope: str,
 
 
 @router.post("/oauth/token")
-def token(request: Request, grant_type: str = Form(...), code: str = Form(...),
-          redirect_uri: str = Form(...), client_id: str = Form(...),
-          code_verifier: str = Form(...)):
+def token(request: Request, grant_type: str = Form(...), code: str = Form(""),
+          redirect_uri: str = Form(""), client_id: str = Form(""),
+          code_verifier: str = Form(""), refresh_token: str = Form("")):
+    # NB: every field except grant_type is OPTIONAL at the signature level and
+    # required per-grant below. A refresh_token request carries no code /
+    # redirect_uri / code_verifier, so declaring those Form(...) would have
+    # FastAPI 422 the request before the grant_type branch ever ran.
     _require_enabled()
     ensure_schema()
     # Debug (secret-free): explains WHY a token exchange fails. Never logs the
     # code or verifier, only their shape/outcome.
     log.debug("token exchange: grant_type=%s client_id=%s redirect=%s "
-              "code_present=%s verifier_len=%s", grant_type, client_id,
-              redirect_uri, bool(code), len(code_verifier or ""))
+              "code_present=%s verifier_len=%s refresh_present=%s", grant_type,
+              client_id, redirect_uri, bool(code), len(code_verifier or ""),
+              bool(refresh_token))
+    if grant_type == "refresh_token":
+        return _refresh_grant(request, refresh_token, client_id)
     if grant_type != "authorization_code":
+        _fail(request, "unsupported_grant_type", client_id=client_id)
         raise HTTPException(400, "unsupported_grant_type")
+    if not (code and redirect_uri and client_id and code_verifier):
+        _fail(request, "invalid_request", client_id=client_id)
+        raise HTTPException(
+            400, "invalid_request: code, redirect_uri, client_id and "
+                 "code_verifier are required for authorization_code")
     row = db.fetchone("SELECT * FROM oauth_codes WHERE code = :code", {"code": code})
     if not row or row["used"]:
         log.debug("token invalid_grant: code not found or already used "
@@ -467,6 +488,57 @@ def token(request: Request, grant_type: str = Form(...), code: str = Form(...),
         _record_connection(request, client_id, scope, max_tier)
         grants.upsert_on_connect(client_id, "", urlparse(redirect_uri).hostname or "")
     body = {"access_token": access, "token_type": "Bearer", "scope": scope}
+    if ttl > 0:
+        body["expires_in"] = ttl
+        # Only issue a refresh token when the access token can actually expire.
+        # With a non-expiring access token there is nothing to refresh, and a
+        # long-lived refresh token would be pure extra attack surface.
+        body["refresh_token"] = refresh.issue(
+            client_id=client_id, name=name, kind=kind, scope=scope,
+            max_tier=max_tier, ttl=settings.oauth_refresh_ttl)
+    return body
+
+
+def _refresh_grant(request: Request, refresh_token: str, client_id: str):
+    """grant_type=refresh_token: rotate the refresh token and mint a new access
+    token. This is what keeps a connector alive across an access-token expiry
+    without dragging the owner back through the browser consent screen."""
+    if not refresh_token:
+        _fail(request, "invalid_request", client_id=client_id)
+        raise HTTPException(400, "invalid_request: refresh_token required")
+    try:
+        row = refresh.redeem(refresh_token, client_id=client_id)
+    except refresh.RefreshError as e:
+        # A reuse detection is a security event, not routine noise: the family
+        # and the connection's access tokens have just been burned.
+        _audit("refresh", request, "blocked", reason=e.reason,
+               client_id=client_id or None, breach=e.breach)
+        _fail(request, e.reason, client_id=client_id)
+        raise HTTPException(400, f"invalid_grant: {e.reason}") from None
+    settings = get_settings()
+    ttl = (settings.hub_token_ttl if row["kind"] == "hub"
+           else settings.oauth_token_ttl)
+    expires_at = None
+    if ttl > 0:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    scope = row["scope"]
+    access = auth.mint(name=row["name"], scopes=scope.replace(" ", ","),
+                       max_tier=row["max_tier"], kind=row["kind"],
+                       expires_at=expires_at, client_id=row["client_id"])
+    # Successor stays in the SAME family so a later reuse of any ancestor is
+    # still detectable as a chain breach.
+    new_refresh = refresh.issue(
+        client_id=row["client_id"], name=row["name"], kind=row["kind"],
+        scope=scope, max_tier=row["max_tier"],
+        ttl=settings.oauth_refresh_ttl, family_id=row["family_id"])
+    # Deliberately NOT calling grants.upsert_on_connect here: on an `ask`
+    # policy it resets an active grant to pending, so refreshing would knock
+    # the connector back into the approval queue on every rotation. A refresh
+    # continues an approved connection; it is not a new one.
+    _audit("refresh", request, "allowed", client_id=row["client_id"],
+           granted_scope=scope, kind=row["kind"])
+    body = {"access_token": access, "token_type": "Bearer", "scope": scope,
+            "refresh_token": new_refresh}
     if ttl > 0:
         body["expires_in"] = ttl
     return body

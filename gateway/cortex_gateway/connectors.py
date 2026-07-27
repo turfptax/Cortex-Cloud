@@ -14,7 +14,7 @@ stored. `key_prefix` (first 12 chars, non-secret) identifies a key in listings.
 """
 from __future__ import annotations
 
-from . import auth, db
+from . import auth, db, refresh
 
 VALID_SCOPES = {"connector:read", "connector:write"}
 VALID_TIERS = {"public", "internal", "confidential", "restricted"}
@@ -61,12 +61,15 @@ def get(key_id: int) -> dict | None:
 
 
 def revoke(key_id: int) -> bool:
-    row = db.fetchone("SELECT id FROM gateway_tokens WHERE id = :id "
+    row = db.fetchone("SELECT id, client_id FROM gateway_tokens WHERE id = :id "
                       "AND kind = 'connector'", {"id": key_id})
     if not row:
         return False
     db.execute("UPDATE gateway_tokens SET revoked_at = CURRENT_TIMESTAMP "
                "WHERE id = :id", {"id": key_id})
+    # If this key belongs to an OAuth connection, drop its refresh chain too so
+    # the revocation cannot be undone by a refresh.
+    refresh.revoke_for_client(row.get("client_id") or "")
     return True
 
 

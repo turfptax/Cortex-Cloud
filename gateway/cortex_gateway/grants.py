@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from . import corpus_writes, db
+from . import corpus_writes, db, refresh
 from .auth import Principal
 from .config import get_settings
 
@@ -191,6 +191,9 @@ def dedupe_connections() -> int:
                 "UPDATE gateway_tokens SET revoked_at = CURRENT_TIMESTAMP "
                 "WHERE client_id = :c AND revoked_at IS NULL",
                 {"c": r["client_id"]})
+            # Kill the refresh chain too, or a deduped connection could mint
+            # itself a new access token and reappear.
+            refresh.revoke_for_client(r["client_id"])
             revoked += 1
     return revoked
 
@@ -307,7 +310,11 @@ def revoke(grant_id: int) -> dict | None:
     n = db.execute_write(
         "UPDATE gateway_tokens SET revoked_at = CURRENT_TIMESTAMP "
         "WHERE client_id = :c AND revoked_at IS NULL", {"c": cid})
+    # Disconnect must mean disconnected: without this the connection could
+    # refresh its way back to a live access token after the owner revoked it.
+    r = refresh.revoke_for_client(cid)
     out = get_by_id(grant_id)
     if out is not None:
         out["tokens_revoked"] = n
+        out["refresh_tokens_revoked"] = r
     return out
