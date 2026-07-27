@@ -238,7 +238,7 @@ export function ChatPanel({
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.length === 0 ? (
             <div className="text-sm text-text-muted text-center py-12">
-              Talk to the overseer. It has access to your working memory,
+              Talk to Cortex. It has access to your working memory,
               recent gists, themes, and the institutional notes left by the
               first instance. Ask anything — what you've been working on,
               what you might be forgetting, what it thinks of a pattern it
@@ -347,7 +347,7 @@ export function ChatPanel({
             disabled={sending}
             title={voiceActive
               ? 'Exit voice mode'
-              : 'Voice mode — talk to the overseer'}
+              : 'Voice mode — talk to Cortex'}
             className={`h-9 w-9 shrink-0 rounded-md flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
               voiceActive
                 ? 'bg-accent text-white'
@@ -381,7 +381,7 @@ export function ChatPanel({
             onClick={onToggleDirectMode}
             disabled={sending || voiceActive}
             title={directMode
-              ? 'Direct mode ON — talking to overseer (Opus) directly'
+              ? 'Direct mode ON — talking to Cortex (Opus) directly'
               : 'Direct mode OFF — using router (cheaper). Click to switch.'}
             className={`h-9 px-2 shrink-0 rounded-md text-[11px] font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
               directMode
@@ -596,7 +596,7 @@ export function VoiceModeBanner({
     off: '',
     listening: 'Listening…',
     transcribing: 'Transcribing…',
-    thinking: 'Overseer is thinking…',
+    thinking: 'Cortex is thinking…',
     speaking: 'Speaking…',
   }
   const dotColor: Record<VoiceState, string> = {
@@ -734,7 +734,7 @@ export function ChatBubble({
                 ? 'system'
                 : m.answered_by === 'router'
                   ? 'router'
-                  : 'overseer'}
+                  : 'cortex'}
           </span>
           {/* Slice 14.7 CP4: layer badge — emerald for router, purple
               for overseer. Only on assistant rows that carry the
@@ -750,9 +750,9 @@ export function ChatBubble({
                 ? `Escalated: ${m.escalation_reason}`
                 : (m.answered_by === 'router'
                     ? 'Answered by the cheap Flash router'
-                    : 'Answered by the full Opus overseer')}
+                    : 'Answered by the full Opus model')}
             >
-              {m.answered_by === 'router' ? 'Router' : 'Overseer'}
+              {m.answered_by === 'router' ? 'Router' : 'Cortex'}
               {m.escalation_reason && ' ↑'}
             </span>
           )}
@@ -1012,9 +1012,9 @@ function FeedbackControl({
                 onClick={discuss}
                 disabled={busy}
                 className="px-2.5 py-1 rounded text-xs text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-50"
-                title="Save this feedback and open a thread with the overseer, seeded with this exchange"
+                title="Save this feedback and open a thread with Cortex, seeded with this exchange"
               >
-                Discuss with Overseer
+                Discuss with Cortex
               </button>
             )}
             <button

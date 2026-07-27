@@ -629,11 +629,11 @@ export function OverseerPage() {
     '- `/compress` — fold older turns into a compressed summary',
     '- `/cost` — show today\'s LLM spend and remaining budget',
     '- `/budget` — alias for /cost',
-    '- `/tick` — force an overseer loop tick now',
+    '- `/tick` — force a curator loop tick now',
     '- `/whoami` — working memory snapshot (freshness + posture)',
     '- `/sibling-status` — A-channel dispatch counters',
     '',
-    'Commands run locally (no LLM cost). Overseer can still see results in their next turn.',
+    'Commands run locally (no LLM cost). Cortex can still see results in its next turn.',
   ].join('\n')
 
   const handleSlashCommand = async (raw: string): Promise<boolean> => {
@@ -800,7 +800,7 @@ export function OverseerPage() {
               '## Sibling status (Category A)',
               '',
               `- Dispatched today: **${wm.sibling_dispatched_today ?? 0} / ${wm.sibling_daily_cap ?? 0}**`,
-              `- Unrated completed (overseer owes a rating): **${wm.sibling_unrated_count ?? 0}**`,
+              `- Unrated completed (the curator owes a rating): **${wm.sibling_unrated_count ?? 0}**`,
               `- In flight (dispatched, awaiting result): **${wm.sibling_pending_for_me ?? 0}**`,
               '',
               '_Category B and C agents are gated on ≥1 week of A-volume data + graduation criteria._',
@@ -1163,7 +1163,7 @@ export function OverseerPage() {
   }
 
   const handleTickNow = async () => {
-    setBusy('Running overseer tick…')
+    setBusy('Running curator tick…')
     setLastAction('')
     setError('')
     try {

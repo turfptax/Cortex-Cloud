@@ -35,6 +35,17 @@ def _t(name, *cols):
     return sa.Table(name, md, *cols)
 
 
+organizations = _t("organizations",
+    sa.Column("tag", sa.String(80), primary_key=True),
+    sa.Column("name", sa.String(200)), sa.Column("org_type", sa.String(40)),
+    sa.Column("my_role", sa.String(120)),
+    sa.Column("is_active", sa.Integer, server_default=sa.text("1")),
+    sa.Column("notes", sa.Text),
+    sa.Column("is_default", sa.Integer, server_default=sa.text("0")),
+    sa.Column("external_ref", sa.String(200)),
+    sa.Column("sort_order", sa.Integer, server_default=sa.text("0")),
+    sa.Column("created_at", sa.DateTime))
+
 projects = _t("projects",
     sa.Column("tag", sa.String(80), primary_key=True),
     sa.Column("name", sa.String(200)), sa.Column("status", sa.String(40)),
@@ -43,6 +54,19 @@ projects = _t("projects",
     sa.Column("github_url", sa.String(300)), sa.Column("total_hours", sa.Float),
     sa.Column("collaborators", sa.String(400)),
     sa.Column("last_touched", sa.DateTime), sa.Column("created_at", sa.DateTime))
+
+tasks = _t("tasks",
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("uuid", sa.String(64), unique=True),
+    sa.Column("project_tag", sa.String(80)), sa.Column("title", sa.String(300)),
+    sa.Column("details", sa.Text), sa.Column("status", sa.String(20)),
+    sa.Column("priority", sa.Integer), sa.Column("due_date", sa.String(20)),
+    sa.Column("proposed", sa.Integer, server_default=sa.text("0")),
+    sa.Column("source", sa.String(40)), sa.Column("source_ref", sa.String(120)),
+    sa.Column("created_by", sa.String(80)),
+    sa.Column("external_ref", sa.String(120)),
+    sa.Column("completed_at", sa.String(30)),
+    sa.Column("created_at", sa.DateTime), sa.Column("updated_at", sa.DateTime))
 
 notes = _t("notes",
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
@@ -101,7 +125,8 @@ human_journal_entries = _t("human_journal_entries",
     sa.Column("text", sa.Text), sa.Column("entry_type", sa.String(40)),
     sa.Column("created_at", sa.DateTime))
 
-ALL_TABLES = [projects, notes, people, time_entries, summaries_gist, summaries_theme,
+ALL_TABLES = [organizations, tasks, projects, notes, people, time_entries,
+              summaries_gist, summaries_theme,
               open_questions, patterns, temporal_narratives, overseer_journal,
               human_journal_entries]
 
@@ -109,6 +134,21 @@ ALL_TABLES = [projects, notes, people, time_entries, summaries_gist, summaries_t
 
 BASE = datetime.utcnow() - timedelta(days=90)
 def D(days, h=9): return BASE + timedelta(days=days, hours=h)
+
+ORGS = [
+    ("demo-openshore", "OpenShore Collective", "collective", "founder",
+     "Open-hardware group building coastal + workshop instrumentation."),
+    ("demo-quietlab", "QuietLab", "research", "member",
+     "Acoustic materials research shared with Lena's materials lab."),
+]
+
+TASKS = [
+    ("demo-task-0001", "demo-tidegauge", "Calibrate rangefinder against tide chart", "Compare 48h of sensor readings with NOAA station data.", "open", 1, 0, "manual"),
+    ("demo-task-0002", "demo-tidegauge", "Write grant final report", "Due end of month; include dashboard screenshots.", "in_progress", 2, 0, "manual"),
+    ("demo-task-0003", "demo-mycelium-panels", "Run absorption test on batch 4", "Impedance tube, 250Hz-4kHz sweep.", "open", 2, 0, "manual"),
+    ("demo-task-0004", "demo-solar-kiln", "Replace vent servo", "Current one stalls under load; spare in parts bin.", "done", 3, 0, "manual"),
+    ("demo-task-0005", "demo-harbor-notes", "Sketch sync conflict rules", "Extracted from session notes; confirm before building.", "open", 3, 1, "overseer-extracted"),
+]
 
 PROJECTS = [
     ("demo-tidegauge", "TideGauge", "active", 1, "Open-source coastal water-level sensor: ESP32 + ultrasonic rangefinder logging tide height to a public dashboard.", "hardware", "demo-openshore", "https://example.com/robin/tidegauge", 41.5, "Mara Quinn, Dev Osei"),
@@ -210,6 +250,8 @@ def _seed(engine):
     md.create_all(engine)  # create the demo tables if missing
     with engine.begin() as c:
         # clear any prior demo rows so re-runs don't duplicate
+        c.execute(sa.delete(organizations).where(organizations.c.tag.like("demo-%")))
+        c.execute(sa.delete(tasks).where(tasks.c.uuid.like("demo-task-%")))
         c.execute(sa.delete(projects).where(projects.c.tag.like("demo-%")))
         c.execute(sa.delete(people).where(people.c.id.like("demo-%")))
         c.execute(sa.delete(notes).where(notes.c.source == "demo"))
@@ -218,6 +260,18 @@ def _seed(engine):
                   temporal_narratives, overseer_journal, human_journal_entries):
             c.execute(sa.delete(t))  # interpretive tables are demo-only
 
+        for i, (tag, name, otype, role, onotes) in enumerate(ORGS):
+            c.execute(sa.insert(organizations).values(
+                tag=tag, name=name, org_type=otype, my_role=role,
+                is_active=1, notes=onotes, is_default=0, external_ref="",
+                sort_order=i, created_at=D(-88)))
+        for i, (uid, ptag, title, details, status, pri, proposed, src) in enumerate(TASKS):
+            c.execute(sa.insert(tasks).values(
+                uuid=uid, project_tag=ptag, title=title, details=details,
+                status=status, priority=pri, due_date="", proposed=proposed,
+                source=src, source_ref="", created_by="demo", external_ref="",
+                completed_at=D(-2).strftime("%Y-%m-%d %H:%M:%S") if status == "done" else "",
+                created_at=D(-10 + i), updated_at=D(-2 - i)))
         for i, (tag, name, status, pri, desc, cat, org, gh, hrs, collab) in enumerate(PROJECTS):
             c.execute(sa.insert(projects).values(
                 tag=tag, name=name, status=status, priority=pri, description=desc,
@@ -256,7 +310,8 @@ def _seed(engine):
             c.execute(sa.insert(overseer_journal).values(body=body, created_at=D(-20 + i * 3)))
         for text, et in HUMAN_JOURNAL:
             c.execute(sa.insert(human_journal_entries).values(text=text, entry_type=et, created_at=D(-15)))
-    print(f"seeded: {len(PROJECTS)} projects, {len(PEOPLE)} people, {len(GISTS)} notes+gists, "
+    print(f"seeded: {len(ORGS)} orgs, {len(TASKS)} tasks, "
+          f"{len(PROJECTS)} projects, {len(PEOPLE)} people, {len(GISTS)} notes+gists, "
           f"{len(THEMES)} themes, {len(QUESTIONS)} questions, {len(PATTERNS)} patterns, "
           f"{len(NARRATIVES)} narratives, {len(JOURNAL)} journal, {len(HUMAN_JOURNAL)} human-journal")
 

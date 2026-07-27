@@ -275,7 +275,7 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
         ) : (
           <p className="text-xs text-text-muted italic">
             No narrative yet. Click "Regenerate narrative" to ask the
-            overseer to write one based on the current data, or wait
+            curator to write one based on the current data, or wait
             for the loop tick to pick this project up.
           </p>
         )}

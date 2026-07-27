@@ -97,7 +97,7 @@ export function NotificationsPanel({
         </div>
         {unread.length === 0 ? (
           <div className="text-sm text-text-muted py-8 text-center">
-            All caught up. Notifications will appear here when the overseer
+            All caught up. Notifications will appear here when Cortex
             flags something — stale projects, automation anomalies, growing
             backlogs.
           </div>
@@ -338,8 +338,8 @@ export function NotificationCustomActions({
       {freeTextOpen !== null && (
         <div className="rounded-md border border-border bg-surface-tertiary/40 p-2">
           <div className="text-[10px] text-text-muted mb-1">
-            Reply to overseer — your text is logged and surfaced to them
-            on their next tick.
+            Reply to Cortex — your text is logged and picked up
+            on the next tick.
           </div>
           <textarea
             value={freeTextValue}

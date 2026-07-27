@@ -893,11 +893,11 @@ function OverseerReflectionsSection({
       <header className="flex items-baseline gap-3">
         <div>
           <h3 className="text-base font-semibold text-text-primary">
-            Overseer reflections
+            Curator reflections
           </h3>
           <p className="text-xs text-text-muted mt-1">
-            The overseer's first-person notes at the end of notable
-            ticks. Append-only — these are for future overseer instances
+            The curator's first-person notes at the end of notable
+            ticks. Append-only — these are for future curator instances
             to read at boot. You read along.
           </p>
         </div>
@@ -957,7 +957,7 @@ function OverseerJournalEntryView({ j }: { j: OverseerJournalEntry }) {
       <div className="flex items-center gap-2 mb-2">
         <span
           className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${provColor}`}
-          title="Overseer's self-reported confidence in this entry"
+          title="The curator's self-reported confidence in this entry"
         >
           prov: {j.provisionality}
         </span>
@@ -1032,7 +1032,7 @@ export function JournalTab({
     { key: 'temporal', label: 'Temporal narratives' },
     {
       key: 'reflections',
-      label: 'Overseer reflections',
+      label: 'Curator reflections',
       count: overseerEntries.length,
     },
   ]

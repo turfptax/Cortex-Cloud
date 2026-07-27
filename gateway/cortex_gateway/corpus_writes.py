@@ -125,6 +125,20 @@ def upsert_task(values: dict):
         db.execute(f"UPDATE tasks SET {sets} WHERE id = :id",
                    {**values, "id": tid})
         return tid
+    # Legacy parity with the core's uuid idempotency (OPT-9 fix): a
+    # write carrying an existing uuid is an UPDATE of that row, matching
+    # routed-mode semantics. Without this, PATCH /v1/tasks/{uuid} in
+    # single-file dev mode became an INSERT missing NOT NULL columns.
+    if values.get("uuid"):
+        hit = db.fetchone("SELECT id FROM tasks WHERE uuid = :u",
+                          {"u": values["uuid"]})
+        if hit:
+            uid = values.pop("uuid")
+            values["updated_at"] = _utcnow()
+            sets = ", ".join(f"{k} = :{k}" for k in values)
+            db.execute(f"UPDATE tasks SET {sets} WHERE uuid = :u",
+                       {**values, "u": uid})
+            return hit["id"]
     values.setdefault("uuid", str(uuid.uuid4()))
     return db.insert("tasks", values)
 

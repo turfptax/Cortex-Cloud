@@ -236,7 +236,7 @@ export function useVoiceMode({ sendVoiceTurn }: UseVoiceModeArgs) {
       try {
         reply = await sendVoiceTurn(text)
       } catch (e: any) {
-        setLastError(`Overseer reply failed: ${e?.message || e}`)
+        setLastError(`Cortex reply failed: ${e?.message || e}`)
       } finally {
         window.clearTimeout(fillerTimer)
       }
