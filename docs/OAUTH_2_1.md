@@ -23,9 +23,11 @@ is an approve button gated behind an interactive Entra login, not a signup.
 ## Best practices followed
 
 - **Disabled by default.** OAuth is a public token-minting surface, so it stays
-  off unless `GATEWAY_OAUTH_ENABLED=1`. On Azure it is unset, so
+  off unless `GATEWAY_OAUTH_ENABLED=1`, and while it is off
   `POST /oauth/register` and `POST /oauth/token` return 404. Turn it on only
-  when wiring a real connector. (`config.py`, `oauth.py:_require_enabled`)
+  when wiring a real connector. Any instance running a claude.ai/ChatGPT
+  connector or the phone app has it on. (`config.py`,
+  `oauth.py:_require_enabled`)
 - **Authorization code + PKCE, S256 only.** Plain PKCE and any non-S256 method
   are rejected. The verifier is checked with a constant-time compare. Public
   clients, no client secret. (`oauth.py:_verify_pkce`, `authorize_form`)
@@ -47,12 +49,38 @@ is an approve button gated behind an interactive Entra login, not a signup.
   guarded `UPDATE ... WHERE used = 0` that returns a row count; only the writer
   that flips `0 -> 1` mints. This closes the replay race under scale-out
   (`--max-replicas` > 1). (`oauth.py:token`, `db.execute_write`)
-- **Short-lived access tokens.** OAuth-minted tokens expire after
-  `GATEWAY_OAUTH_TOKEN_TTL` seconds (default 24h), and the token response
-  carries `expires_in`. Immortal tokens are opt-in only (TTL <= 0). Because
-  there is no refresh-token rotation or leak-revocation path yet, this TTL is
-  the full leak-exposure window, so the default is kept short; raise it only
-  once refresh rotation exists.
+- **Short-lived access tokens, long-lived refresh tokens.** OAuth-minted access
+  tokens expire after `GATEWAY_OAUTH_TOKEN_TTL` seconds (default 24h) and the
+  token response carries `expires_in`. Immortal tokens are opt-in only
+  (TTL <= 0), and they also suppress refresh-token issuance, since there is
+  nothing to refresh. Keep the access TTL SHORT: it is the exposure window for a
+  captured access token, and with the refresh grant below a short TTL costs a
+  connector nothing because it renews itself. If a deployment lengthened this as
+  a workaround for the pre-refresh "connector dies daily" problem, put it back to
+  the default. The long-lived credential is now the refresh token, which unlike a
+  bare access token is rotated on every use and revocable.
+- **Refresh tokens, rotated, with reuse detection.** `grant_type=refresh_token`
+  is supported (`refresh.py`, `oauth.py:_refresh_grant`), so a connector renews
+  itself without a human at a browser. Redemption is single-use and atomic
+  (`UPDATE ... WHERE used_at IS NULL` returning a row count) and mints a
+  successor in the SAME `family_id`. Presenting an already-used token means two
+  parties hold it, so the entire family AND every access token for that client
+  are revoked. Only the hash is stored. Lifetime is
+  `GATEWAY_OAUTH_REFRESH_TTL` (default 90d). A refresh is NOT a new connection:
+  it deliberately does not call `grants.upsert_on_connect`, because on an `ask`
+  policy that resets an active grant to pending and would push the connector back
+  into the approval queue on every rotation.
+- **A revoked connection cannot refresh back to life.** Owner revoke
+  (`grants.revoke`), startup dedupe (`grants.dedupe_connections`) and single-key
+  revoke (`connectors.revoke`) all call `refresh.revoke_for_client`. As defense in
+  depth, `refresh.redeem` independently re-checks `connector_grants.status` and
+  refuses if the connection was revoked.
+- **Authentication failures are recorded durably.** A 401 on `/mcp` carrying a
+  token, and every token-endpoint rejection, writes an `auth_failures` row
+  (reason, path, client, non-secret key prefix, source IP, time), readable at
+  `GET /admin/auth-failures`. The Container App environment is created without a
+  log destination, so without this a connector failure left no trace that
+  survived a restart. (`authlog.py`)
 - **Reflected values escaped + strict CSP.** Every value echoed into the
   consent HTML is `html.escape`'d and served under
   `default-src 'none'; form-action 'self'; base-uri 'none'`, so a crafted
@@ -104,11 +132,6 @@ is an approve button gated behind an interactive Entra login, not a signup.
 
 ## Deliberately deferred (with reasons)
 
-- **No refresh tokens yet.** When an access token expires the connector re-runs
-  the authorize flow. Refresh-token rotation (single-use, family revocation on
-  reuse) is the right next step if a connector needs long unattended sessions;
-  it was not built because no connector uses OAuth today. Adding it is the main
-  open OAuth work item.
 - **Sensitivity ceiling still fails open on untagged rows.** This is a corpus
   gating decision (`corpus_service`/`sensitivity.py`), not an OAuth flow issue,
   and pairs with cortex-core tagging. Tracked in the audit report and project
@@ -118,8 +141,10 @@ is an approve button gated behind an interactive Entra login, not a signup.
 ## Enabling OAuth for a real connector
 
 1. Set `GATEWAY_OAUTH_ENABLED=1` and `GATEWAY_PUBLIC_URL=https://<domain>`.
-   (Both are live on Azure App Service `cortex-gw-8fed` as of 2026-07-11.)
-2. Optionally set `GATEWAY_OAUTH_TOKEN_TTL` (seconds; default 86400 = 24h).
+2. The token lifetimes have working defaults and normally need no setting:
+   `GATEWAY_OAUTH_TOKEN_TTL` (access, default 86400 = 24h) and
+   `GATEWAY_OAUTH_REFRESH_TTL` (refresh, default 7776000 = 90d). Do not raise the
+   access TTL and do not set it to 0; see the access-token bullet above.
 3. **Rollout, then lock down** with the trusted-client allowlist:
    - Phase 1 (test): leave `GATEWAY_OAUTH_ALLOWED_REDIRECTS` unset, connect the
      real connectors, and read back the exact `redirect_uris` they registered
@@ -127,9 +152,10 @@ is an approve button gated behind an interactive Entra login, not a signup.
    - Phase 2 (lock down): set `GATEWAY_OAUTH_ALLOWED_REDIRECTS` to those exact
      https callbacks (space/comma separated), e.g.
      `https://claude.ai/api/mcp/auth_callback https://chatgpt.com/connector_platform_oauth_redirect`.
-     Registration and authorize then reject every other redirect. NB: changing
-     App Service app settings needs a cold `stop`/`start` (a warm restart does
-     not re-read env because `get_settings()` is process-cached).
+     Registration and authorize then reject every other redirect. NB: settings
+     are read once per process (`get_settings()` is cached), so a change only
+     takes effect on a fresh process. On Container Apps an env-var change creates
+     a new revision, which satisfies this by itself.
 4. Confirm live: `POST /oauth/register` accepts a listed callback (201) and
    rejects an unlisted one (400); `GET /oauth/authorize` redirects to Entra
    login; a full register -> authorize -> token dance with
@@ -140,9 +166,18 @@ callback, so it is not in the allowlist; revisit if Grok adopts the OAuth flow.
 
 ## Debugging a connector flow (`GATEWAY_DEBUG`)
 
-Set `GATEWAY_OAUTH_ENABLED`-style `GATEWAY_DEBUG=1` (cold stop/start to apply) to
-turn on exhaustive tracing, then read it with
-`az webapp log tail -g cortex-rg -n cortex-gw-8fed` (pipe through `grep -a`).
+**Read this first: your instance probably keeps no server logs.** `deploy.sh`
+creates the Container App environment without a log destination, so
+`appLogsConfiguration.destination` is null and nothing is retained. The live tail
+below shows only what the CURRENT replica has emitted since it started, and a
+restart erases it. For authentication problems specifically, use the durable
+`auth_failures` table via `GET /admin/auth-failures` instead; it survives
+restarts. To get real platform logs, recreate the environment with
+`--logs-destination log-analytics` and a workspace.
+
+Set `GATEWAY_DEBUG=1` (a new revision applies it) to turn on exhaustive tracing,
+then tail the running replica with
+`az containerapp logs show -g <rg> -n <app> --container gateway --follow`.
 Two extra streams appear:
 
 - `oauth_trace` - one line per request: method, path, query, status, whether

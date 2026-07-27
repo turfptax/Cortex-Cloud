@@ -36,7 +36,9 @@ gateway is configured to trust.
    shows a consent screen; on approve it 302-redirects to `<PHONE_REDIRECT>?code=<code>&state=<state>&iss=<issuer>`.
 5. **Exchange**: `POST /oauth/token` (form-urlencoded) with
    `grant_type=authorization_code&code=<code>&redirect_uri=<PHONE_REDIRECT>&client_id=<id>&code_verifier=<verifier>`
-   -> `{ "access_token": "...", "token_type": "Bearer", "scope": "hub", "expires_in": 2592000 }`.
+   -> `{ "access_token": "...", "token_type": "Bearer", "scope": "hub",
+   "expires_in": 2592000, "refresh_token": "rft_..." }`.
+   Persist BOTH tokens. The refresh token is single-use (see Token lifetime).
 
 The returned `scope` MUST be `hub`. If it is `connector:read`, the redirect host
 is not configured as a hub host (see Config below) - surface that as a setup
@@ -52,9 +54,32 @@ final redirect with the gateway owner so it can be added to config.
 
 ### Token lifetime
 
-`hub` tokens last 30 days by default (`expires_in`). There is no refresh token
-yet, so on `401 invalid or revoked token` the app re-runs the flow (steps 4-5;
-the `client_id` is reused). Handle 401 by re-authenticating, not by erroring.
+`hub` access tokens last 30 days by default (`expires_in`,
+`GATEWAY_HUB_TOKEN_TTL`), and the exchange also returns a `refresh_token`
+(`GATEWAY_OAUTH_REFRESH_TTL`, default 90 days).
+
+On `401 invalid or revoked token`, refresh FIRST rather than re-running the
+browser flow:
+
+```
+POST /oauth/token   grant_type=refresh_token&refresh_token=<rt>&client_id=<id>
+-> { "access_token": "...", "token_type": "Bearer", "scope": "hub",
+     "expires_in": 2592000, "refresh_token": "<NEW rt>" }
+```
+
+Two rules the app must honor:
+
+1. **Store the new refresh token atomically, overwriting the old one.** Rotation
+   is mandatory and the previous token is burned on use.
+2. **Never retry a refresh with a token that was already sent.** Presenting an
+   already-used refresh token is treated as a leak: the gateway revokes the whole
+   rotation family and every `hub` token for the client, and the only recovery is
+   the full browser flow. If a refresh response is lost in flight, fall back to
+   steps 4-5 rather than replaying the old token.
+
+Fall back to the full flow (steps 4-5, reusing the `client_id`) when the refresh
+itself returns 400. Handle 401 by renewing or re-authenticating, never by
+erroring.
 
 ---
 

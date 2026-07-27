@@ -388,8 +388,9 @@ def test_existing_database_gains_both_new_tables(tmp_path, monkeypatch):
 
 
 def test_mcp_401_logs_only_when_a_token_was_presented(gw):
-    """A presented-but-dead token is the signal worth keeping; anonymous probes
-    are scanner noise that would bury it."""
+    """A presented-but-dead token is the signal worth keeping. An anonymous
+    probe carries no credential to correlate, and logging those would let any
+    unauthenticated caller grow the table without bound."""
     from starlette.testclient import TestClient
     from fastapi import FastAPI
     from cortex_gateway import auth, authlog, db

@@ -162,11 +162,15 @@ deploy/             infrastructure as code plus the deploy scripts
   entra-setup.sh           the Microsoft sign-in app, locked to you
   build-image.sh           az acr build from the repo root
   tick-job.sh              schedule the memory loop
-docs/               the OAuth flow, connector-grant model, Entra setup, vision
+docs/               OAuth flow, connector grants, Entra setup, operator notes, vision
 ```
 
 Build the image with `az acr build --file deploy/Dockerfile .` from the
 repo root; the SPA is compiled inside the build.
+
+**Already running an instance?** Read
+[docs/OPERATOR_NOTES.md](docs/OPERATOR_NOTES.md) before you redeploy. It records
+what each release changes for you and what it needs you to do.
 
 ## FAQ
 

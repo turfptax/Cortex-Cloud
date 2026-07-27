@@ -239,9 +239,11 @@ class MCPBearerMiddleware(BaseHTTPMiddleware):
             detail = getattr(exc, "detail", "unauthorized")
             # Durable record: this is THE 401 a connector hits when its access
             # token expires, and until now it left no trace that survived a
-            # container restart. Only log when a token was actually PRESENTED:
-            # bare unauthenticated probes are internet background noise (this
-            # host gets scanned continuously) and would bury the real signal.
+            # container restart. Only log when a token was actually PRESENTED.
+            # An unauthenticated probe carries no evidence worth keeping (there
+            # is no credential to correlate), and since anyone can send one,
+            # logging those would let an unauthenticated caller grow this table
+            # without bound.
             if authz:
                 authlog.record(str(detail), path=str(request.url.path),
                                authorization=authz,

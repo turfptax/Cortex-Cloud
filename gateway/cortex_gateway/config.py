@@ -144,11 +144,16 @@ class Settings:
             "GATEWAY_OAUTH_ENABLED", "").strip().lower() in ("1", "true", "yes")
 
         # OAuth 2.1 best practice: access tokens are short-lived, not immortal.
-        # OAuth-minted tokens expire after this many seconds (default 24h). With
-        # no refresh-token rotation yet, this TTL IS the leak-exposure window, so
-        # the default is deliberately short; a connector re-runs the authorize
-        # flow to get a fresh one. Raise it once refresh rotation exists. Set
-        # GATEWAY_OAUTH_TOKEN_TTL=0 for non-expiring tokens (not recommended).
+        # OAuth-minted tokens expire after this many seconds (default 24h).
+        # Refresh rotation now exists (refresh.py), so a connector renews itself
+        # instead of re-running the browser consent flow, which means this TTL
+        # should stay SHORT rather than be raised: it is the exposure window for
+        # a captured access token, and a short window costs the connector
+        # nothing. The long-lived credential is the refresh token below, which is
+        # rotated on every use and revocable. Do NOT set
+        # GATEWAY_OAUTH_TOKEN_TTL=0: that makes access tokens immortal AND
+        # suppresses refresh-token issuance entirely (a token that cannot expire
+        # has nothing to refresh), which is the worst of both.
         # (Pre-shared connector keys are managed separately and unaffected.)
         _default_ttl = 24 * 3600
         try:
