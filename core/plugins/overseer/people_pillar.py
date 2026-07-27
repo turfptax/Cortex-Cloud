@@ -36,6 +36,33 @@ TABLES = ("overseer_people", "project_people", "person_notes",
 # the table carries no localizer triggers.
 JOURNAL_TABLES = ("human_journal_entries",)
 
+# Phase C sub-slice 3: the temporal narrative rollups (daily/weekly/
+# monthly/yearly syntheses of the user's life). No FK edges; UNIQUE
+# (kind, period_label) travels inside the table DDL; local_created_at
+# is application-filled, so no triggers.
+NARRATIVE_TABLES = ("temporal_narratives",)
+
+NARRATIVE_FRESH_DDL = (
+    """CREATE TABLE IF NOT EXISTS userdb.temporal_narratives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    period_label TEXT NOT NULL,
+    narrative TEXT NOT NULL,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    triggered_by TEXT NOT NULL DEFAULT 'loop',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    local_created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(kind, period_label)
+)""",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_temporal_kind_label"
+    " ON temporal_narratives(kind, period_label)",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_temporal_created"
+    " ON temporal_narratives(created_at)",
+)
+
 JOURNAL_FRESH_DDL = (
     """CREATE TABLE IF NOT EXISTS userdb.human_journal_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -406,6 +433,9 @@ def ensure(conn, log=None):
     report["journal"] = _move_group(conn, JOURNAL_TABLES,
                                     list(JOURNAL_FRESH_DDL),
                                     log, "journal_move")
+    report["narratives"] = _move_group(conn, NARRATIVE_TABLES,
+                                       list(NARRATIVE_FRESH_DDL),
+                                       log, "narratives_move")
     # Legacy retirement is sealed separately: a failure here reports
     # but never unwinds the completed moves.
     report["absorbed"] = 0

@@ -843,24 +843,10 @@ CREATE INDEX IF NOT EXISTS idx_project_summaries_last_active
 -- double-generation on subsequent loop ticks within the trigger
 -- window.
 
-CREATE TABLE IF NOT EXISTS temporal_narratives (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind TEXT NOT NULL,                     -- 'daily' | 'weekly' | 'monthly'
-    period_start TEXT NOT NULL,             -- UTC ISO of period start
-    period_end TEXT NOT NULL,               -- UTC ISO of period end
-    period_label TEXT NOT NULL,             -- 'YYYY-MM-DD' | 'YYYY-W##' | 'YYYY-MM'
-    narrative TEXT NOT NULL,
-    cost_usd REAL NOT NULL DEFAULT 0,
-    model TEXT NOT NULL DEFAULT '',
-    triggered_by TEXT NOT NULL DEFAULT 'loop',  -- 'loop' | 'manual'
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    local_created_at TEXT NOT NULL DEFAULT '',  -- ISO with offset
-    UNIQUE(kind, period_label)
-);
-CREATE INDEX IF NOT EXISTS idx_temporal_kind_label
-    ON temporal_narratives(kind, period_label);
-CREATE INDEX IF NOT EXISTS idx_temporal_created
-    ON temporal_narratives(created_at);
+-- temporal_narratives moved to cortex.db in OPT-10 Phase C
+-- sub-slice 3 (2026-07-27): narratives about the user's life are user
+-- data. people_pillar.py owns its schema and move; re-declaring it
+-- here would recreate an empty shadow in overseer.db main every boot.
 
 -- ─ Slice 5: human journal entries ───────────────────────────────
 -- Free-form notes the user writes in the Hub. The temporal

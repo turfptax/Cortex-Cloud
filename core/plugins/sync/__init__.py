@@ -449,7 +449,7 @@ class SyncPlugin(Plugin):
             limit = 10
         limit = max(1, min(limit, 100))
 
-        con = self._connect(OVERSEER_DB)
+        con = self._pull_source_conn(kind)
         try:
             rows = [dict(r) for r in con.execute(
                 "SELECT {} FROM {} WHERE id > ? ORDER BY id LIMIT ?".format(
@@ -465,6 +465,21 @@ class SyncPlugin(Plugin):
         next_cursor = "{}:{}".format(prefix, rows[-1]["id"]) if rows else cursor
         return {"ok": True, "kind": kind, "rows": rows, "more": more,
                 "next_cursor": next_cursor}
+
+    def _pull_source_conn(self, table):
+        """OPT-10 Phase C: the physical moves relocate user tables into
+        cortex.db one sub-slice at a time. Serve each pull kind from
+        wherever its table lives today: the core ledger first, falling
+        back to overseer.db for not-yet-moved tables and self-host
+        cores that never ran the movers. `table` is always a
+        whitelisted kind name, never caller input."""
+        con = self._connect(self._core_db_path())
+        try:
+            con.execute("SELECT 1 FROM {} LIMIT 1".format(table))
+            return con
+        except Exception:
+            con.close()
+            return self._connect(OVERSEER_DB)
 
     @staticmethod
     def _cursor_id(payload, prefix):
@@ -555,13 +570,7 @@ class SyncPlugin(Plugin):
         last_id = self._cursor_id(payload, "person")
         limit = self._limit(payload)
         # OPT-10 Phase C sub-slice 1: contacts live in cortex.db now.
-        # Fall back to overseer.db for a not-yet-moved self-host core.
-        con = self._connect(self._core_db_path())
-        try:
-            con.execute("SELECT 1 FROM overseer_people LIMIT 1")
-        except Exception:
-            con.close()
-            con = self._connect(OVERSEER_DB)
+        con = self._pull_source_conn("overseer_people")
         try:
             raw = con.execute(
                 "SELECT id, name, display_name, aliases_json, tags_json, "
