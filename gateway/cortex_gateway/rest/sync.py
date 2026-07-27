@@ -28,6 +28,14 @@ PULL_KINDS: dict[str, tuple[str, list[str]]] = {
                                     "period_end", "narrative", "created_at"]),
 }
 
+# Pull kinds forwarded to the co-located core's sync plugin instead of
+# read here. The Bell (OPT curator proposals, 2026-07-26) is a mutable
+# SNAPSHOT with an answerable-set filter (undismissed, unarchived,
+# unsnoozed, actionable); that logic lives in the core's _pull_bell and
+# must not be duplicated against the ATTACH read replica. Requires
+# routed (ATTACH) mode; in standalone dev the kind stays unknown.
+ROUTED_PULL_KINDS = frozenset({"bell_notifications"})
+
 # kind -> insertable columns (phone-authored, append-only)
 PUSH_KINDS: dict[str, list[str]] = {
     "human_journal_entries": ["text", "entry_type", "created_at"],
@@ -113,6 +121,9 @@ class PullIn(BaseModel):
 
 @router.post("/pull")
 def pull(body: PullIn, _: Principal = Depends(_app)):
+    if body.kind in ROUTED_PULL_KINDS and corpus_writes.routed():
+        return corpus_writes.sync_pull(
+            body.device, body.kind, body.cursor, body.limit)
     spec = PULL_KINDS.get(body.kind)
     if spec is None:
         return {"ok": False, "error": f"unknown pull kind: {body.kind}"}

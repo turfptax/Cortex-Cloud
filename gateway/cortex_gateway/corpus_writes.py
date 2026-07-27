@@ -193,3 +193,13 @@ def sync_push(device: str, kind: str, rows: list[dict]) -> dict:
     Dedup (sync_row_map) is core-side; the gateway keeps no copy."""
     return core().post("/plugins/sync/push",
                        {"device": device, "kind": kind, "rows": rows})
+
+
+def sync_pull(device: str, kind: str, cursor: str, limit: int) -> dict:
+    """Forward a phone pull to the core's sync plugin, for kinds whose
+    semantics live core-side (the Bell is a mutable SNAPSHOT with an
+    answerable-set filter, which the gateway's insert-only cursor reads
+    cannot represent). Same contract both ends; response passes through."""
+    return core().post("/plugins/sync/pull",
+                       {"device": device, "kind": kind,
+                        "cursor": cursor, "limit": limit})
