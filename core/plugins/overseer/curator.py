@@ -472,6 +472,111 @@ def run_apply_responses(*, db, summary: dict, upsert, core_cmd) -> None:
             "failed": failed}
 
 
+# == Stale-proposal sweep (Step 1b.4) ===================================
+
+
+def _resolve_project(core, tag: str):
+    """Resolve a tag to its canonical projects row through one hop of
+    project_aliases (merge_project re-points the loser's aliases at
+    the winner, so one hop is the invariant). Returns the canonical
+    tag, or None when the tag names no existing project. Query
+    failures propagate; the sweep treats them as leave-the-card-alone.
+    """
+    rows = core.query("SELECT tag FROM projects WHERE tag = ?", (tag,))
+    if rows:
+        return rows[0]["tag"]
+    rows = core.query(
+        "SELECT project_tag FROM project_aliases WHERE alias = ?",
+        (tag,))
+    if rows:
+        canonical = rows[0]["project_tag"]
+        if core.query("SELECT tag FROM projects WHERE tag = ?",
+                      (canonical,)):
+            return canonical
+    return None
+
+
+def run_stale_proposal_sweep(*, core, db, summary: dict) -> None:
+    """Step 1b.4 (zero LLM). Archive curator Bell proposals the world
+    has already caught up with, so the Bell never serves an answerable
+    card whose decision is moot.
+
+    Live incident 2026-07-27: merge proposals for pairs already merged
+    during OPT-5 (loser rows deleted, source='merged' aliases written)
+    and an org proposal whose assignment was already true sat
+    answerable on the phone Bell; the owner answered stale cards and
+    was confused.
+
+    Moot conditions, checked against the core THROUGH project_aliases
+    resolution:
+      - merge proposal: the two tags no longer name two distinct
+        existing projects (a tag's row is gone, or both tags resolve
+        to the same canonical row; either way the merge is history).
+      - org proposal: the project's org_tag already equals the
+        proposed org_tag.
+    Anything unparseable or unresolvable is left alone; archiving is
+    only for proposals provably moot. Dismissed and archived rows are
+    never touched, so the owner's own decisions stay on the record.
+    Snoozed rows ARE swept; a moot card should not resurface later."""
+    if core is None:
+        return
+    marks = ",".join("?" * len(CURATOR_RULES))
+    try:
+        rows = db._conn.execute(
+            "SELECT id, rule_name, actions_json FROM notifications "
+            "WHERE rule_name IN ({}) AND archived_at IS NULL "
+            "AND dismissed_at IS NULL".format(marks),
+            CURATOR_RULES).fetchall()
+    except Exception as e:
+        summary["errors"].append("stale_sweep: " + str(e)[:200])
+        return
+    checked = 0
+    archived = 0
+    for r in rows:
+        checked += 1
+        try:
+            actions = json.loads(r["actions_json"] or "[]")
+        except ValueError:
+            continue
+        payloads = {}
+        for a in actions:
+            if isinstance(a, dict) and a.get("kind"):
+                payloads[a["kind"]] = a.get("payload") or {}
+        moot = False
+        try:
+            if r["rule_name"] == "curator_merge_proposal":
+                p = payloads.get("merge_review") or {}
+                tag_a = (p.get("tag_a") or "").strip()
+                tag_b = (p.get("tag_b") or "").strip()
+                if tag_a and tag_b:
+                    res_a = _resolve_project(core, tag_a)
+                    res_b = _resolve_project(core, tag_b)
+                    moot = (res_a is None or res_b is None
+                            or res_a == res_b)
+            elif r["rule_name"] == "curator_org_proposal":
+                p = payloads.get("org_assign") or {}
+                ptag = (p.get("project_tag") or "").strip()
+                org = (p.get("org_tag") or "").strip()
+                if ptag and org:
+                    canonical = _resolve_project(core, ptag)
+                    if canonical is not None:
+                        prow = core.query(
+                            "SELECT COALESCE(org_tag, '') AS org_tag "
+                            "FROM projects WHERE tag = ?", (canonical,))
+                        moot = bool(prow) and prow[0]["org_tag"] == org
+        except Exception:
+            # A resolution query failed; the card may still be live.
+            continue
+        if moot and db.archive_notification(r["id"]):
+            archived += 1
+    if checked:
+        summary["stale_proposals_checked"] = checked
+    if archived:
+        summary["stale_proposals_archived"] = archived
+        log.info("stale-proposal sweep archived %d moot curator "
+                 "proposal(s)", archived)
+
+
 # == Structure audit (Step 1b.5) ========================================
 
 

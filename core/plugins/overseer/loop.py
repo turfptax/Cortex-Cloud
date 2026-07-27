@@ -530,6 +530,23 @@ class OverseerLoop:
                 summary["errors"].append(
                     "apply_responses: " + str(e)[:200])
 
+        # Step 1b.4: stale-proposal sweep. Zero LLM, cheap SQL only.
+        # Archives curator Bell proposals the world has already caught
+        # up with (merge applied, org already assigned) so the Bell
+        # never serves a moot answerable card (live incident
+        # 2026-07-27: the owner answered already-applied merge/org
+        # proposals). Runs right after apply-responses so a decision
+        # applied THIS tick retires its card in the same tick.
+        if self._cfg.get("loop_stale_proposal_sweep", True):
+            try:
+                curator.run_stale_proposal_sweep(
+                    core=self._core, db=self._db, summary=summary)
+            except Exception as e:
+                self._log.exception(
+                    "stale-proposal sweep failed: %s", e)
+                summary["errors"].append(
+                    "stale_sweep: " + str(e)[:200])
+
         # Step 1b.5 (OPT-4): structure audit. Deterministic hierarchy
         # counters every tick (zero LLM); the gated LLM half proposes
         # org placements and runs the folded merge check as a
