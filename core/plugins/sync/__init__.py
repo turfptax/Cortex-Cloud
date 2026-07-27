@@ -661,10 +661,15 @@ class SyncPlugin(Plugin):
         return {"ok": True, "embedding": emb, "dim": len(emb)}
 
     def _http_status(self, payload):
+        """Per-kind counts + newest timestamps for the phone's transport
+        probe. OPT-10 Phase C: pull kinds no longer share one database
+        (moved user tables live in cortex.db), so each kind resolves its
+        own source. A kind whose table is missing on both reports null
+        instead of failing the whole probe."""
         counts, newest = {}, {}
-        con = self._connect(OVERSEER_DB)
-        try:
-            for kind, (_prefix, cols) in PULL_KINDS.items():
+        for kind, (_prefix, cols) in PULL_KINDS.items():
+            con = self._pull_source_conn(kind)
+            try:
                 counts[kind] = con.execute(
                     "SELECT count(*) AS c FROM {}".format(kind)).fetchone()["c"]
                 # cols may carry aliases (written_at AS created_at), so select
@@ -673,8 +678,12 @@ class SyncPlugin(Plugin):
                     "SELECT {} FROM {} ORDER BY id DESC LIMIT 1".format(
                         ", ".join(cols), kind)).fetchone()
                 newest[kind] = str(row["created_at"]) if row else None
-        finally:
-            con.close()
+            except Exception as e:
+                log.warning("sync status: kind %s unavailable: %s", kind, e)
+                counts[kind] = 0
+                newest[kind] = None
+            finally:
+                con.close()
         return {"ok": True, "counts": counts, "newest": newest}
 
 
