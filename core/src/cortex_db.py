@@ -304,13 +304,18 @@ class CortexDB:
 
     def __init__(self, db_path):
         self._db_path = db_path
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # uri=True enables 'file:' URI interpretation on this connection
+        # (needed for the OPT-10 read-only ATTACH); a plain path like
+        # db_path is still treated as a plain path under SQLITE_OPEN_URI.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False,
+                                     uri=True)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA_SQL)
         self._migrate_opt2_orgs()
         self._migrate_opt55_task_prompt()
         self._migrate_opt8_agents()
         self._conn.commit()
+        self._attach_overseer_readonly()
         # Slice 9.4.1 (2026-05-16): every timestamp column gets a
         # paired local_<col>_at (ISO with explicit offset) populated
         # by trigger. Backstops the durable rule that every displayed
@@ -319,6 +324,47 @@ class CortexDB:
         # Idempotent: cost-near-zero after first call.
         from timestamp_localizer import ensure_local_timestamp_columns
         ensure_local_timestamp_columns(self._conn)
+
+    # ── OPT-10 Phase B: the read path (OPT_PLAN 3.3) ──────────────
+
+    # The user's data that history parked in overseer.db, readable from
+    # the user's ledger surface WITHOUT a byte moving. The CMD:query
+    # whitelist path runs an unqualified SELECT, which SQLite resolves
+    # across attached schemas natively (main first, then attach order),
+    # so when a table physically moves into cortex.db in Phase C the
+    # same query serves it from main transparently. imported_sessions
+    # stays behind this read path permanently.
+    OVERSEER_READ_TABLES = (
+        "imported_sessions", "overseer_people", "human_journal_entries",
+        "temporal_narratives", "project_summaries", "summaries_gist",
+    )
+
+    def _attach_overseer_readonly(self):
+        """ATTACH overseer.db as a READ-ONLY schema on the main
+        connection via a 'file:...?mode=ro' URI, so the engine itself
+        rejects writes into the attached schema (the two-ledger rule:
+        this surface never writes the AI's ledger; the overseer
+        plugin's own connection stays the single writer). NOT
+        PRAGMA query_only: empirically that froze the whole connection
+        including main, not just the schema. A missing file (fresh
+        install, no plugin yet) skips cleanly and the whitelisted
+        reads answer 'no such table'."""
+        self._overseer_attached = False
+        path = os.environ.get("OVERSEER_DB_PATH", "").strip()
+        if not path:
+            path = os.path.abspath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "plugins", "overseer", "data", "overseer.db"))
+        if not os.path.exists(path):
+            return
+        try:
+            from pathlib import Path
+            uri = Path(path).resolve().as_uri() + "?mode=ro"
+            self._conn.execute("ATTACH DATABASE ? AS overseer", (uri,))
+            self._overseer_attached = True
+        except Exception:
+            # Never let the read path break the ledger itself.
+            self._overseer_attached = False
 
     def close(self):
         if self._conn:
@@ -1166,6 +1212,9 @@ class CortexDB:
                   "project_aliases", "time_entries", "computers", "people",
                   "files", "training_examples",
                   "agents", "agent_messages", "agent_cursors"]
+        # OPT-10 Phase B: overseer-parked user tables count too when the
+        # read-only ATTACH is live (the except path zeros them if not).
+        tables.extend(self.OVERSEER_READ_TABLES)
         counts = {}
         for t in tables:
             try:

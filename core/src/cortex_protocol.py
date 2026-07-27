@@ -426,7 +426,11 @@ class CortexProtocol:
                          # OPT-8: relay tables are read-only here; they
                          # deliberately do NOT join WRITABLE_TABLES until
                          # the OPT-11 write contract (OPT_PLAN 7.2 V2-FIX).
-                         "agents", "agent_messages", "agent_cursors"):
+                         "agents", "agent_messages", "agent_cursors") \
+                and table not in self._db.OVERSEER_READ_TABLES:
+            # OPT-10 Phase B: the user's data parked in overseer.db is
+            # readable here through the read-only ATTACH (unqualified
+            # names resolve across schemas), never writable.
             # NOTE: pet_state/pet_interactions live in the cortex-pet
             # sister repo's pet.db (Slice 2c2d schema move; Slice 11 plugin
             # extraction). Use /plugins/pet/history or /plugins/pet/status
