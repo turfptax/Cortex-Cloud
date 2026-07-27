@@ -88,14 +88,6 @@ def insert_time_entry(values: dict) -> int:
     return db.insert("time_entries", values)
 
 
-def insert_person(values: dict) -> str:
-    # values includes the caller-generated TEXT id (slug); the endpoint
-    # keeps its collision logic via read-only lookups.
-    if routed():
-        return str(_upsert("people", values))
-    return db.insert("people", values)
-
-
 def insert_project(values: dict) -> None:
     # Create-only in intent: the endpoint 409s on an existing tag
     # first. KNOWN RESIDUAL (review 2026-07-20): a concurrent create

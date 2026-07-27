@@ -87,9 +87,8 @@ def test_db():
     hn = db.register_computer("TEST-PC", os="Linux", cpu="ARM", ram_gb=0.5)
     check("register_computer returns hostname", hn == "TEST-PC")
 
-    # Upsert person
-    pid = db.upsert_person("tory", name="Tory Moghadam", role="Lead AI Engineer")
-    check("upsert_person returns id", pid == "tory")
+    # (upsert_person retired in OPT-10 Phase C: one people table,
+    # written through the overseer plugin's people surface.)
 
     # Stats
     stats = db.get_stats()
@@ -264,11 +263,9 @@ def test_protocol():
     )
     check("CMD:computer_reg -> ACK:computer:hostname", resp == "ACK:computer:TEST")
 
-    # People upsert
-    resp = proto.handle_message(
-        'CMD:people_upsert:{"id":"tory","name":"Tory Moghadam","role":"Lead AI Engineer"}'
-    )
-    check("CMD:people_upsert -> ACK:people:id", resp == "ACK:people:tory")
+    # People upsert retired (OPT-10 Phase C): the command must be gone.
+    resp = proto.handle_message('CMD:people_upsert:{"id":"x"}')
+    check("CMD:people_upsert retired", resp.startswith("ERR:"))
 
     # Query
     resp = proto.handle_message(

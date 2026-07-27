@@ -235,41 +235,10 @@ def create_note(body: NoteIn, _: Principal = Depends(_app)):
     return db.fetchone("SELECT * FROM notes WHERE id = :id", {"id": new_id})
 
 
-# ── People (PK = TEXT id) ─────────────────────────────────────────────
-
-
-class PersonIn(BaseModel):
-    name: str
-    role: str | None = None
-    email: str | None = None
-    projects: str | None = None
-    notes: str | None = None
-
-
-@router.get("/people")
-def list_people(_: Principal = Depends(_app)):
-    return {"people": db.fetchall("SELECT * FROM people ORDER BY name")}
-
-
-@router.post("/people")
-def create_person(body: PersonIn, _: Principal = Depends(_app)):
-    # First FREE suffix, not count-based: a count drifts after deletes
-    # and could mint an id that already exists - and the routed write
-    # path upserts, so a collision would silently overwrite that
-    # person instead of failing (review finding, 2026-07-20).
-    base = pid = _slug(body.name)
-    n = 1
-    while db.fetchone("SELECT id FROM people WHERE id = :id", {"id": pid}):
-        n += 1
-        if n > 1000:
-            raise HTTPException(409, f"cannot allocate id for: {base}")
-        pid = f"{base}-{n}"
-    corpus_writes.insert_person({
-        "id": pid, "name": body.name, "role": body.role or "",
-        "email": body.email or "", "projects": body.projects or "",
-        "notes": body.notes or "",
-    })
-    return db.fetchone("SELECT * FROM people WHERE id = :id", {"id": pid})
+# ── People ────────────────────────────────────────────────────────────
+# /v1/people retired in OPT-10 Phase C sub-slice 1: the legacy people
+# table is gone (absorbed into overseer_people, the one people table).
+# People reads/writes go through the overseer plugin's people surface.
 
 
 # ── Time entries ──────────────────────────────────────────────────────

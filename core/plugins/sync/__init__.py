@@ -103,9 +103,12 @@ PUSH_KINDS = {
     # pull) + body; provenance defaults to owner-voice + created_by_agent
     # to mobile (see _http_push). note_kind / modality optional (DB
     # defaults apply). local_created_at: phone is authority on its own tz.
-    "person_notes": ("overseer", ["person_id", "body", "note_kind",
-                                  "modality", "provenance", "created_at",
-                                  "local_created_at", "created_by_agent"]),
+    # OPT-10 Phase C sub-slice 1 (2026-07-27): the People pillar moved
+    # into cortex.db, so phone-authored person notes land in the core
+    # ledger now (people_pillar.py owns the schema + move).
+    "person_notes": ("core", ["person_id", "body", "note_kind",
+                              "modality", "provenance", "created_at",
+                              "local_created_at", "created_by_agent"]),
     # Voice-assistant transcripts (2026-07-02): the phone's Voice tab pushes
     # each conversation turn as an insert-only row. After accepting rows,
     # _http_push assembles the touched chats into imported_sessions (.jsonl
@@ -549,7 +552,14 @@ class SyncPlugin(Plugin):
                 return []
         last_id = self._cursor_id(payload, "person")
         limit = self._limit(payload)
-        con = self._connect(OVERSEER_DB)
+        # OPT-10 Phase C sub-slice 1: contacts live in cortex.db now.
+        # Fall back to overseer.db for a not-yet-moved self-host core.
+        con = self._connect(self._core_db_path())
+        try:
+            con.execute("SELECT 1 FROM overseer_people LIMIT 1")
+        except Exception:
+            con.close()
+            con = self._connect(OVERSEER_DB)
         try:
             raw = con.execute(
                 "SELECT id, name, display_name, aliases_json, tags_json, "

@@ -14,7 +14,6 @@ const COLUMN_ORDER: Record<string, string[]> = {
   organizations: ['tag', 'name', 'org_type', 'my_role', 'is_active'],
   time_entries: ['started_at', 'project_tag', 'org_tag', 'activity_type', 'description', 'duration_minutes'],
   notes: ['created_at', 'content', 'note_type', 'tags', 'project'],
-  people: ['id', 'name', 'role', 'email', 'projects'],
   sessions: ['id', 'ai_platform', 'started_at', 'ended_at', 'summary'],
 }
 

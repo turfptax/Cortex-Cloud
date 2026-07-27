@@ -162,7 +162,6 @@ class CortexProtocol:
             "get_context": self._cmd_get_context,
             "project_upsert": self._cmd_project_upsert,
             "computer_reg": self._cmd_computer_reg,
-            "people_upsert": self._cmd_people_upsert,
             "log_time": self._cmd_log_time,
             "query": self._cmd_query,
             "file_register": self._cmd_file_register,
@@ -400,29 +399,23 @@ class CortexProtocol:
         )
         return f"ACK:computer:{hostname}"
 
-    def _cmd_people_upsert(self, payload, context):
-        data = json.loads(payload) if payload else {}
-        person_id = data.get("id", "")
-        if not person_id:
-            return "ERR:people_upsert:missing id field"
-        self._db.upsert_person(
-            person_id=person_id,
-            name=data.get("name", ""),
-            role=data.get("role", ""),
-            email=data.get("email", ""),
-            projects=data.get("projects", ""),
-            notes=data.get("notes", ""),
-        )
-        return f"ACK:people:{person_id}"
+    # people_upsert retired in OPT-10 Phase C sub-slice 1: the legacy
+    # people table is gone; people writes go through the overseer
+    # plugin's /plugins/overseer/people surface (cortex_people_* tools).
 
     def _cmd_query(self, payload, context):
         data = json.loads(payload) if payload else {}
         table = data.get("table", "")
         if table not in ("notes", "activities", "searches", "sessions",
-                         "projects", "computers", "people", "files",
+                         "projects", "computers", "files",
                          "organizations", "org_summaries", "tasks",
                          "project_aliases", "time_entries",
                          "training_examples", "training_ledger",
+                         # OPT-10 Phase C sub-slice 1: the People pillar
+                         # (legacy `people` retired; overseer_people
+                         # serves via OVERSEER_READ_TABLES below).
+                         "project_people", "person_notes",
+                         "phone_contacts",
                          # OPT-8: relay tables are read-only here; they
                          # deliberately do NOT join WRITABLE_TABLES until
                          # the OPT-11 write contract (OPT_PLAN 7.2 V2-FIX).

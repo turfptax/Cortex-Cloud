@@ -10,7 +10,6 @@ const TABLE_ICONS: Record<string, string> = {
   organizations: '🏢',
   time_entries: '⏱️',
   notes: '📝',
-  people: '👥',
   sessions: '💬',
   activities: '📊',
   searches: '🔍',
