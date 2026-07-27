@@ -90,7 +90,9 @@ EMBED_URL = "http://127.0.0.1:8082/embedding"
 
 # kind -> (target db, insertable columns); phone-authored, append-only
 PUSH_KINDS = {
-    "human_journal_entries": ("overseer", ["text", "entry_type", "created_at"]),
+    # OPT-10 Phase C sub-slice 2 (2026-07-27): the journal moved into
+    # cortex.db with the People pillar recipe.
+    "human_journal_entries": ("core", ["text", "entry_type", "created_at"]),
     "notes": ("core", ["content", "note_type", "project", "tags", "created_at"]),
     # Device notification capture (2026-06-12): the phone's notification
     # stream as a passive dataset source. Lands in overseer.db; table is

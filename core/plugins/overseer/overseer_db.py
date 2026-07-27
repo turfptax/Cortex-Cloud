@@ -867,15 +867,10 @@ CREATE INDEX IF NOT EXISTS idx_temporal_created
 -- narrative prompts include any entries that fall in the period
 -- being summarized. Multiple entries per day allowed.
 
-CREATE TABLE IF NOT EXISTS human_journal_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    entry_type TEXT NOT NULL DEFAULT 'free',  -- 'free' | 'daily' | 'weekly'
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),  -- UTC
-    local_created_at TEXT NOT NULL DEFAULT ''            -- ISO with offset
-);
-CREATE INDEX IF NOT EXISTS idx_human_journal_created
-    ON human_journal_entries(created_at);
+-- human_journal_entries moved to cortex.db in OPT-10 Phase C
+-- sub-slice 2 (2026-07-27): the user's own journal is user data.
+-- people_pillar.py owns its schema and move; re-declaring it here
+-- would recreate an empty shadow in overseer.db main on every boot.
 
 -- ─ Slice 6: People as first-class memory entity ────────────────
 -- The Overseer captures who matters in the user's work + how they

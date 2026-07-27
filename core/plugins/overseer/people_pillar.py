@@ -31,6 +31,23 @@ import sqlite3
 TABLES = ("overseer_people", "project_people", "person_notes",
           "phone_contacts")
 
+# Phase C sub-slice 2 (same recipe, no FK edges): the user's own voice
+# and typed journal. local_created_at is filled by application code, so
+# the table carries no localizer triggers.
+JOURNAL_TABLES = ("human_journal_entries",)
+
+JOURNAL_FRESH_DDL = (
+    """CREATE TABLE IF NOT EXISTS userdb.human_journal_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    entry_type TEXT NOT NULL DEFAULT 'free',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    local_created_at TEXT NOT NULL DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS userdb.idx_human_journal_created"
+    " ON human_journal_entries(created_at)",
+)
+
 # Fresh-install DDL: the FULL live shape (declared columns + the
 # script-added merged_into_id / aliases_json / is_provisional + the
 # localizer's local_* columns), captured from the live corpus
@@ -264,11 +281,8 @@ def _count(conn, schema, table):
         "SELECT COUNT(*) FROM {}.{}".format(schema, table)).fetchone()[0]
 
 
-def ensure(conn, log=None):
-    """Entry point, called by OverseerDB after the userdb attach. Runs
-    the move for existing installs, creates the pillar for fresh ones,
-    and retires the legacy people table. Returns a report dict and
-    never leaves a transaction open.
+def _move_group(conn, tables, fresh_sqls, log, label):
+    """The hardened move recipe for one table group.
 
     Transaction discipline (adversarial review 2026-07-27): WAL makes
     cross-file commits non-atomic, so the move is TWO explicit
@@ -283,14 +297,14 @@ def ensure(conn, log=None):
     next boot re-syncs; after phase 2, done. Aborts roll back inside
     their own transaction, so no schema residue can shadow live data
     on other connections."""
-    report = {"state": "already-moved", "absorbed": 0}
-    in_main = [t for t in TABLES if _has(conn, "main", t)]
+    report = {"state": "already-moved"}
+    in_main = [t for t in tables if _has(conn, "main", t)]
 
     # Rollback healing: a previous-image boot re-executes the old
-    # OVERSEER_SCHEMA_SQL and recreates EMPTY people tables in main,
-    # which would shadow the moved data forever. If main's copy is
-    # empty, userdb's is populated, and the _migrated_ original is
-    # present, the empty shadow is that artifact: drop it.
+    # OVERSEER_SCHEMA_SQL and recreates EMPTY tables in main, which
+    # would shadow the moved data forever. If main's copy is empty,
+    # userdb's is populated, and the _migrated_ original is present,
+    # the empty shadow is that artifact: drop it.
     healed = []
     for t in list(in_main):
         try:
@@ -307,13 +321,13 @@ def ensure(conn, log=None):
     if healed:
         report["healed"] = healed
         if log:
-            log("people_pillar: dropped empty rollback shadows %s" % healed)
+            log("%s: dropped empty rollback shadows %s" % (label, healed))
 
     if in_main:
         conn.execute("PRAGMA foreign_keys=OFF")
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for t in [x for x in reversed(TABLES) if x in in_main]:
+            for t in [x for x in reversed(tables) if x in in_main]:
                 if _has(conn, "userdb", t):
                     conn.execute("DELETE FROM userdb.{}".format(t))
             for t in in_main:
@@ -331,21 +345,23 @@ def ensure(conn, log=None):
             if bad:
                 conn.rollback()
                 if log:
-                    log("people_pillar: PARITY MISMATCH %r; move aborted "
-                        "with zero residue, will retry next boot" % bad)
-                return {"state": "parity-failed", "detail": bad}
+                    log("%s: PARITY MISMATCH %r; move aborted with zero "
+                        "residue, will retry next boot" % (label, bad))
+                report.update(state="parity-failed", detail=bad)
+                return report
             conn.commit()
         except Exception as e:
             conn.rollback()
             if log:
-                log("people_pillar: copy failed (%s); move aborted with "
-                    "zero residue, will retry next boot" % e)
-            return {"state": "parity-failed", "detail": str(e)[:200]}
+                log("%s: copy failed (%s); move aborted with zero "
+                    "residue, will retry next boot" % (label, e))
+            report.update(state="parity-failed", detail=str(e)[:200])
+            return report
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for t in in_main:  # parent first by TABLES order
+            for t in in_main:  # parent first by the group's order
                 conn.execute(
                     "ALTER TABLE main.{t} RENAME TO _migrated_{t}"
                     .format(t=t))
@@ -353,34 +369,46 @@ def ensure(conn, log=None):
         except Exception as e:
             conn.rollback()
             if log:
-                log("people_pillar: rename failed (%s); copies are "
-                    "durable, renames retry next boot" % e)
-            return {"state": "rename-failed", "detail": str(e)[:200]}
-        report["state"] = "moved"
-        report["tables"] = in_main
+                log("%s: rename failed (%s); copies are durable, "
+                    "renames retry next boot" % (label, e))
+            report.update(state="rename-failed", detail=str(e)[:200])
+            return report
+        report.update(state="moved", tables=in_main)
         if log:
-            log("people_pillar: moved %s into cortex.db" % (in_main,))
-    elif not (_has(conn, "userdb", "overseer_people")
-              and _has(conn, "userdb", "person_notes")
-              and _has(conn, "userdb", "project_people")):
+            log("%s: moved %s into cortex.db" % (label, in_main))
+    elif not all(_has(conn, "userdb", t) for t in tables):
         # Fresh install (or resuming a crashed fresh creation: every
-        # FRESH_DDL and trigger statement is IF NOT EXISTS).
+        # fresh statement is IF NOT EXISTS).
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for sql in FRESH_DDL:
-                conn.execute(sql)
-            for sql in _fresh_triggers():
+            for sql in fresh_sqls:
                 conn.execute(sql)
             conn.commit()
         except Exception as e:
             conn.rollback()
-            return {"state": "fresh-failed", "detail": str(e)[:200]}
+            report.update(state="fresh-failed", detail=str(e)[:200])
+            return report
         report["state"] = "fresh"
         if log:
-            log("people_pillar: fresh install, pillar created in cortex.db")
+            log("%s: fresh install, tables created in cortex.db" % label)
+    return report
 
+
+def ensure(conn, log=None):
+    """Entry point, called by OverseerDB after the userdb attach. Moves
+    each group with the hardened recipe, creates them fresh where there
+    is nothing to move, and retires the legacy people table. The report
+    keeps the people group's fields at the top level (established
+    consumers) with the journal group nested."""
+    report = dict(_move_group(conn, TABLES,
+                              list(FRESH_DDL) + _fresh_triggers(),
+                              log, "people_pillar"))
+    report["journal"] = _move_group(conn, JOURNAL_TABLES,
+                                    list(JOURNAL_FRESH_DDL),
+                                    log, "journal_move")
     # Legacy retirement is sealed separately: a failure here reports
-    # but never unwinds the completed move.
+    # but never unwinds the completed moves.
+    report["absorbed"] = 0
     try:
         conn.execute("BEGIN IMMEDIATE")
         report["absorbed"] = _retire_legacy_people(conn, log)
