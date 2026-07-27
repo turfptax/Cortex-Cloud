@@ -121,7 +121,13 @@ def test_as_metadata_advertises_best_practices():
     meta = oauth.as_metadata(Request(scope))
     assert meta["code_challenge_methods_supported"] == ["S256"]
     assert meta["token_endpoint_auth_methods_supported"] == ["none"]
-    assert meta["grant_types_supported"] == ["authorization_code"]
+    # refresh_token is advertised so a connector renews itself instead of
+    # dying at access-token expiry and needing a manual browser reconnect.
+    assert meta["grant_types_supported"] == ["authorization_code",
+                                             "refresh_token"]
+    # Implicit and password grants must never appear (OAuth 2.1 removed them).
+    assert "implicit" not in meta["grant_types_supported"]
+    assert "password" not in meta["grant_types_supported"]
     assert meta["authorization_response_iss_parameter_supported"] is True
     assert "admin" not in meta["scopes_supported"]
     assert "app" not in meta["scopes_supported"]

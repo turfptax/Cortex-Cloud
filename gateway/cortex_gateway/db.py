@@ -132,6 +132,54 @@ oauth_codes = sa.Table(
     sa.Column("used", sa.Integer, nullable=False, server_default=sa.text("0")),
 )
 
+# OAuth refresh tokens (RFC 6749 §6 + OAuth 2.1 rotation). Without these an
+# access token's expiry ended the connection outright: the connector had no way
+# to renew, so the owner had to re-run the browser consent flow by hand every
+# time the TTL elapsed. Only the hash is stored, same as gateway_tokens.
+#
+# `family_id` is the rotation chain: redeeming a refresh token marks it used and
+# issues a successor in the SAME family. Presenting an already-used token means
+# it leaked (the legitimate client would hold the successor), so the whole family
+# is revoked on reuse per the OAuth 2.1 BCP.
+oauth_refresh_tokens = sa.Table(
+    "oauth_refresh_tokens", _metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("token_hash", sa.String(64), nullable=False, unique=True),
+    sa.Column("family_id", sa.String(80), nullable=False),
+    sa.Column("client_id", sa.String(80), nullable=False),
+    sa.Column("name", sa.String(200), nullable=False),      # gateway_tokens.name to mint under
+    sa.Column("kind", sa.String(20), nullable=False, server_default=sa.text("'oauth'")),
+    sa.Column("scope", sa.String(200), nullable=False, server_default=sa.text("'connector:read'")),
+    sa.Column("max_tier", sa.String(20), nullable=False, server_default=sa.text("'internal'")),
+    sa.Column("created_at", sa.DateTime, server_default=NOW),
+    sa.Column("expires_at", sa.DateTime),                   # NULL = never expires
+    sa.Column("used_at", sa.DateTime),                      # set when rotated; reuse = breach
+    sa.Column("revoked_at", sa.DateTime),
+    sa.Index("idx_refresh_family", "family_id"),
+    sa.Index("idx_refresh_client", "client_id"),
+)
+
+# Durable 401 log. The Container App environment has no log destination wired
+# (appLogsConfiguration.destination is null), so the only server-side record was
+# the running replica's in-memory tail, which a restart wipes. That made every
+# past connector failure undiagnosable after the fact. This table survives
+# restarts and is the forensic trail for "the connector broke again".
+# key_prefix stores the first 12 chars of the presented token, matching the
+# existing non-secret gateway_tokens.key_prefix convention, so a failure can be
+# correlated to a known token without storing the secret.
+auth_failures = sa.Table(
+    "auth_failures", _metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("reason", sa.String(80), nullable=False),
+    sa.Column("path", sa.String(200)),
+    sa.Column("client_id", sa.String(80)),
+    sa.Column("key_prefix", sa.String(16)),
+    sa.Column("source_ip", sa.String(80)),
+    sa.Column("user_agent", sa.String(300)),
+    sa.Column("occurred_at", sa.DateTime, server_default=NOW),
+    sa.Index("idx_auth_failures_at", "occurred_at"),
+)
+
 # Sync v2 (SYNC_CONTRACT_DRAFT.md, RATIFIED 2026-06-10): uuid -> canonical id
 # dedup map for idempotent pushes. Lives in the canonical DB so all transports
 # (Gateway HTTPS, BLE bridge live-forward) share one dedup space.
@@ -236,6 +284,8 @@ _OWNED = {"gateway_tokens": gateway_tokens,
           "oauth_clients": oauth_clients,
           "oauth_codes": oauth_codes,
           "oauth_consent": oauth_consent,
+          "oauth_refresh_tokens": oauth_refresh_tokens,
+          "auth_failures": auth_failures,
           "connector_connections": connector_connections,
           "connector_grants": connector_grants,
           "sync_row_map": sync_row_map,

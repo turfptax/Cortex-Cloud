@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from pydantic import BaseModel
 
-from .. import connectors, monitor
+from .. import authlog, connectors, monitor
 from ..auth import Principal, require_scope
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -72,3 +72,15 @@ def read_monitor(hours: float = 1.0, _: Principal = Depends(_admin)):
     """Exfiltration check over the corpus read log: anomaly alerts plus a
     per-caller activity summary for the trailing `hours` window."""
     return monitor.analyze(window_hours=hours)
+
+
+@router.get("/auth-failures")
+def read_auth_failures(limit: int = 50, _: Principal = Depends(_admin)):
+    """Recent authentication failures, newest first.
+
+    This is the trail for "the connector stopped working": the Container App
+    keeps no server logs, so before this table a 401 left nothing behind once
+    the replica restarted. `key_prefix` correlates a failure with a known token
+    without exposing the secret.
+    """
+    return {"failures": authlog.recent(limit=min(max(int(limit), 1), 500))}

@@ -22,7 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
-from . import auth, corpus_service, db, grants, mcp_server, oauth
+from . import auth, authlog, corpus_service, db, grants, mcp_server, oauth
 from .config import get_settings
 from .core_client import CoreWriteError
 from .ratelimit import limiter
@@ -237,9 +237,24 @@ class MCPBearerMiddleware(BaseHTTPMiddleware):
             principal = auth.principal_from_bearer(authz)
         except Exception as exc:  # HTTPException from auth
             detail = getattr(exc, "detail", "unauthorized")
+            # Durable record: this is THE 401 a connector hits when its access
+            # token expires, and until now it left no trace that survived a
+            # container restart. Only log when a token was actually PRESENTED:
+            # bare unauthenticated probes are internet background noise (this
+            # host gets scanned continuously) and would bury the real signal.
+            if authz:
+                authlog.record(str(detail), path=str(request.url.path),
+                               authorization=authz,
+                               source_ip=_source_ip(request),
+                               user_agent=request.headers.get("user-agent"))
             return JSONResponse({"error": detail}, status_code=401,
                                 headers={"WWW-Authenticate": challenge})
         if not principal.has("connector:read"):
+            authlog.record("missing_connector_scope",
+                           path=str(request.url.path), authorization=authz,
+                           client_id=principal.client_id,
+                           source_ip=_source_ip(request),
+                           user_agent=request.headers.get("user-agent"))
             return JSONResponse(
                 {"error": "token lacks connector scope"}, status_code=403)
         token = mcp_server.current_principal.set(principal)
