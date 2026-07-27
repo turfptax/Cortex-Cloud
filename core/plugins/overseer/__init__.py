@@ -286,7 +286,7 @@ def _render_intro_markdown(brief: dict) -> str:
     ops = brief.get("ops") or {}
     if ops:
         parts.append("---")
-        parts.append("## Operational state (overseer's plumbing)")
+        parts.append("## Operational state (the curator's plumbing)")
         parts.append("")
         parts.append("*Read only if you need to reason about the "
                       "Cortex system itself - most readers can skip.*")
@@ -337,7 +337,7 @@ class OverseerPlugin(Plugin):
                 "working_memory_status": "warming-up",
                 "working_memory_built_at": None,
                 "working_memory_hint": (
-                    "First overseer tick has not run yet. Call POST "
+                    "First curator tick has not run yet. Call POST "
                     "/plugins/overseer/tick-now or wait "
                     "loop_first_tick_delay_s seconds."
                 ),

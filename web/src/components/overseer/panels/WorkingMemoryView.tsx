@@ -545,7 +545,7 @@ export function WorkingMemoryView({
       {wm.recent_future_notes && wm.recent_future_notes.length > 0 && (
         <div>
           <div className="text-text-muted uppercase tracking-wide mb-1">
-            Notes to Future Overseer ({wm.recent_future_notes.length}
+            Notes to Future Curator ({wm.recent_future_notes.length}
             {wm.future_overseer_notes_count &&
               wm.future_overseer_notes_count > wm.recent_future_notes.length &&
               ` of ${wm.future_overseer_notes_count}`}

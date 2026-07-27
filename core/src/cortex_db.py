@@ -478,7 +478,7 @@ class CortexDB:
         desktop Agent and binds on the service token. New tables need no
         column migration; the seeds are idempotent."""
         for row in (
-            ("overseer", "Overseer", "builtin", "builtin", "",
+            ("overseer", "Cortex", "builtin", "builtin", "",
              "The Cortex curator loop: writes proposals and summaries."),
             ("tory", "Tory", "builtin", "builtin", "",
              "The owner. Messages to 'tory' surface through the Bell "
@@ -490,6 +490,12 @@ class CortexDB:
                 "INSERT OR IGNORE INTO agents (handle, display_name, kind, "
                 "bind_kind, bind_value, description) VALUES (?, ?, ?, ?, ?, ?)",
                 row)
+        # OPT-9 rename sweep (OPT_PLAN 3.5): the identity the user sees
+        # is Cortex. INSERT OR IGNORE never retouches an existing row,
+        # so re-stamp installs seeded before the rename. Idempotent.
+        self._conn.execute(
+            "UPDATE agents SET display_name = 'Cortex' "
+            "WHERE handle = 'overseer' AND display_name = 'Overseer'")
         self._conn.commit()
 
     # --- Agents (OPT-8 comms skeleton) ---

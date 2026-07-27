@@ -88,7 +88,7 @@ mcp = FastMCP(
         "needs a write-enabled token, which is off by default).\n\n"
         "Pillars (structured, first-class):\n"
         f"- cortex_projects_list / cortex_project_get: what {_OWNER} is working on, "
-        "with the Overseer's rollup stats.\n"
+        "with Cortex's rollup stats.\n"
         "- cortex_orgs_list / cortex_org_get: the organization layer that "
         "groups projects (companies and thematic groups); org_tag on a "
         "project names its organization.\n"
@@ -243,7 +243,7 @@ def cortex_projects_list(status: str = "", limit: int = 40) -> dict[str, Any]:
                                       readOnlyHint=True, idempotentHint=True,
                                       openWorldHint=False))
 def cortex_project_get(tag: str) -> dict[str, Any]:
-    """Full detail for one project by its tag, plus the Overseer's numeric
+    """Full detail for one project by its tag, plus Cortex's numeric
     rollup stats (sessions, active minutes, cost) when available. Read-only."""
     return pillars_service.project_get(_principal(), tag)
 
@@ -278,7 +278,7 @@ def cortex_tasks_list(project: str = "", status: str = "",
     """List tasks in the shared memory layer: things to be done under a
     project, visible to every connecting agent. Optional filters:
     `project` (canonical tag), `status` (open | in_progress | blocked |
-    done | cancelled). Overseer-extracted proposals are excluded unless
+    done | cancelled). Curator-extracted proposals are excluded unless
     include_proposed. Read-only."""
     return pillars_service.tasks_list(_principal(), project=project,
                                       status=status,

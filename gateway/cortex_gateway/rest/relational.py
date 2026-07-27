@@ -84,6 +84,34 @@ def update_project(tag: str, body: ProjectIn, _: Principal = Depends(_app)):
     return db.fetchone("SELECT * FROM projects WHERE tag = :t", {"t": tag})
 
 
+# ── Organizations (OPT-9 surface tail; read-only) ─────────────────────
+# Orgs are curated: rows come from the owner or accepted curator
+# proposals, never from generic REST creates, matching the read-only MCP
+# org tools. Reads mirror the projects block (app/hub scope only).
+
+
+@router.get("/organizations")
+def list_organizations(_: Principal = Depends(_app)):
+    return {"organizations": db.fetchall(
+        "SELECT * FROM organizations ORDER BY sort_order, tag")}
+
+
+@router.get("/organizations/{tag}")
+def get_organization(tag: str, _: Principal = Depends(_app)):
+    row = db.fetchone("SELECT * FROM organizations WHERE tag = :t",
+                      {"t": tag})
+    if not row:
+        raise HTTPException(404, f"organization not found: {tag}")
+    projects = db.fetchall(
+        "SELECT tag, name, status FROM projects WHERE org_tag = :t "
+        "ORDER BY last_touched DESC", {"t": tag})
+    summary = None
+    if db.has_table("org_summaries"):
+        summary = db.fetchone(
+            "SELECT * FROM org_summaries WHERE org_tag = :t", {"t": tag})
+    return {**row, "projects": projects, "summary": summary}
+
+
 # ── Tasks (OPT-3; uuid-idempotent, core-validated) ────────────────────
 # Both routes delegate to corpus_writes.upsert_task, which inherits the
 # core's write contract (uuid idempotency, status vocabulary, the
@@ -118,6 +146,35 @@ def _task_write(values: dict):
         if str(e).startswith("ERR:"):
             raise HTTPException(422, str(e)[:200])
         raise
+
+
+@router.get("/tasks")
+def list_tasks(project: str | None = Query(default=None),
+               status: str | None = Query(default=None),
+               include_proposed: bool = Query(default=False),
+               _: Principal = Depends(_app)):
+    clauses, params = [], {}
+    if project:
+        clauses.append("project_tag = :p")
+        params["p"] = project
+    if status:
+        clauses.append("status = :s")
+        params["s"] = status
+    if not include_proposed:
+        clauses.append("proposed = 0")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return {"tasks": db.fetchall(
+        f"SELECT * FROM tasks{where} ORDER BY priority, due_date, id",
+        params)}
+
+
+@router.get("/tasks/{task_uuid}")
+def get_task(task_uuid: str, _: Principal = Depends(_app)):
+    row = db.fetchone("SELECT * FROM tasks WHERE uuid = :u",
+                      {"u": task_uuid})
+    if not row:
+        raise HTTPException(404, f"task not found: {task_uuid}")
+    return row
 
 
 @router.post("/tasks")

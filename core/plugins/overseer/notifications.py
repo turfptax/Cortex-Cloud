@@ -223,10 +223,10 @@ def rule_llm_health(*, db, core_memory, config) -> list[dict]:
         "rule_name": "llm_health",
         "rule_key": "default",
         "severity": "important",
-        "title": "Overseer LLM is DOWN - {}/{} recent calls failed".format(
+        "title": "Cortex LLM is DOWN - {}/{} recent calls failed".format(
             n - ok_n, n),
         "body": ("{diag}\n\nLatest error: {err}\n\nUntil resolved, routine "
-                 "overseer work (gist summarization, classification, "
+                 "curator work (gist summarization, classification, "
                  "journal, temporal narratives) is degraded.").format(
                      diag=diag, err=last_err),
         "related_table": "",
