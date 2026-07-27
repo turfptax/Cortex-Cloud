@@ -114,8 +114,26 @@ authorization code -> `POST /oauth/token` (code + PKCE verifier) -> access token
   `GATEWAY_OAUTH_ALLOW_WRITE=1` only controls whether the `connector:write` scope
   string is minted (relevant to static CLI tokens), not whether an approved
   connector can write.
-- **Tokens are short-lived (24h)** and re-auth via the flow; there is no refresh
-  token yet.
+- **Access tokens are short-lived (24h default) and self-renewing.** The token
+  response carries a `refresh_token` alongside the access token whenever the
+  access TTL is above zero. On expiry the connector POSTs
+  `grant_type=refresh_token&refresh_token=<rt>&client_id=<id>` to `/oauth/token`
+  and gets a new access token plus a NEW refresh token, with the old one burned.
+  No browser, no human. Refresh lifetime is `GATEWAY_OAUTH_REFRESH_TTL` (default
+  90d). Discovery advertises both grants, so compliant connectors do this on
+  their own.
+- **Reuse of a refresh token is treated as a leak.** Presenting an already
+  rotated refresh token revokes the whole rotation family and every access token
+  for that client, and the connector must run the browser consent flow again.
+  The realistic accidental trigger is restoring a connector's token store from a
+  backup, or running two copies of a client against one token store.
+- **Revoking a connection kills its refresh chain**, so a revoked connector
+  cannot renew itself back to life.
+- **Connectors that authorized before refresh shipped need one last manual
+  reconnect.** Refresh tokens are only minted at the token endpoint, so an
+  older connection holds an access token with no refresh token attached. It
+  works until that token expires, then needs reconnecting once. See
+  [OPERATOR_NOTES.md](OPERATOR_NOTES.md).
 - **What's connected:** the `connector_connections` table in the canonical DB
   records every successful connector authentication (client, name, scope, tier,
   source IP, time). `GATEWAY_DEBUG=1` adds an `oauth_trace` line per request

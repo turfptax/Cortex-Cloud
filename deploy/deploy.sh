@@ -74,6 +74,11 @@ if [ -z "${IMAGE:-}" ]; then
 fi
 
 echo "== [7/9] container app environment =="
+# NB: created with NO log destination, so the Container App retains no server
+# logs; only the running replica's in-memory tail is available and a restart
+# erases it. The durable trail for auth problems is the auth_failures table
+# (GET /admin/auth-failures); see docs/OPERATOR_NOTES.md. To get platform logs,
+# add --logs-destination log-analytics plus a workspace, and accept the cost.
 az containerapp env create -g "$RESOURCE_GROUP" -n "$ENV_NAME" -l "$LOCATION" -o none
 ENV_ID=$(az containerapp env show -g "$RESOURCE_GROUP" -n "$ENV_NAME" --query id -o tsv)
 

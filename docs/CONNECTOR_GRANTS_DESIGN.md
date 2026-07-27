@@ -156,11 +156,17 @@ Request:  { "approval_policy": "ask" }          // "ask" | "always"
 
 ### `POST /v1/connections/{id}/revoke`
 
-Disconnect: `status=revoked`, `level=none`, and revoke the outstanding token(s)
-(`gateway_tokens.revoked_at`) so the connector must re-OAuth to return.
+Disconnect: `status=revoked`, `level=none`, revoke the outstanding access token(s)
+(`gateway_tokens.revoked_at`), AND revoke every refresh token for the client
+(`refresh.revoke_for_client`) so the connector must re-OAuth to return. Both are
+required: without the refresh revoke the connection could mint itself a fresh
+access token and come straight back. As a backstop, `refresh.redeem` also
+re-checks `connector_grants.status` and refuses a revoked connection even if some
+future revoke path forgets the chain.
 
 ```
-200 OK:   { "ok": true, "id": 12, "status": "revoked", "tokens_revoked": 1 }
+200 OK:   { "ok": true, ...updated connection...,
+            "tokens_revoked": 1, "refresh_tokens_revoked": 1 }
 ```
 
 Notifications (a phone push when a `pending` connection appears) are a follow-on;

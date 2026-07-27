@@ -1,0 +1,117 @@
+# Operator notes
+
+Release notes for people already running a Cortex-Cloud instance. Each entry says
+what changed, what happens by itself, and what needs you to do something. Newest
+first.
+
+If you are standing up a new instance instead, start from the README; you get all
+of this by default and nothing below applies to you.
+
+Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
+[MCP_OAUTH_AZURE_ENTRA_SETUP.md](MCP_OAUTH_AZURE_ENTRA_SETUP.md) for the connector
+runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
+model.
+
+## 2026-07-27 (commit a3103d2): OAuth refresh tokens + durable auth-failure log
+
+### Why it shipped
+
+OAuth access tokens expired after 24 hours and the gateway supported only the
+`authorization_code` grant, so a connector had no way to renew itself and renewal
+meant re-running the browser consent flow by hand. On the reference instance this
+looked like the Claude connector breaking roughly once a day; the token table
+showed four full re-authorizations of the same client in five days.
+
+### What is automatic
+
+Nothing in this list needs you.
+
+- **The two new tables create themselves.** `oauth_refresh_tokens` and
+  `auth_failures` are added by `db.init_schema()`, which `create_app()` runs at
+  startup. They are new tables rather than new columns, so `create_all()` is
+  sufficient and there is no migration to run. Existing rows are untouched.
+- **Discovery updates itself.** `/.well-known/oauth-authorization-server` now
+  advertises `grant_types_supported: ["authorization_code", "refresh_token"]`, and
+  `POST /oauth/register` returns the same pair. Compliant connectors pick this up
+  on their own.
+- **Refresh tokens are issued from now on.** Every token exchange that produces an
+  expiring access token also returns a `refresh_token`.
+- **Revocation got stricter on its own.** Revoking a connection, revoking a
+  connector key, and the startup dedupe pass now all revoke that client's refresh
+  tokens too, and a refresh is independently refused if the connection's grant is
+  revoked. You do not need to do anything to get this.
+
+### What you must do
+
+1. **Redeploy.** Pull master and redeploy so the gateway is running this code.
+
+2. **Expect one last manual reconnect per existing connector.** This is the part
+   people get wrong, so it is worth being precise. Refresh tokens are only minted
+   at the token endpoint. A connector that authorized BEFORE this deploy holds an
+   access token with no refresh token attached, and upgrading does not
+   retroactively give it one. That connector keeps working until its current
+   access token expires, then fails once and needs you to reconnect it in the
+   normal way. From that reconnect onward it renews itself and should not need you
+   again.
+
+3. **If you lengthened `GATEWAY_OAUTH_TOKEN_TTL`, put it back.** Raising the access
+   token lifetime was the only workaround available before refresh existed, and
+   the reference instance had it at 30 days. That is now the wrong setting: the
+   access token is the credential that gets captured, and the refresh token is the
+   one that is long lived, rotated on every use, and revocable. Remove the override
+   (or set it back to `86400`) so access tokens are short again. Connectors will
+   not notice, because they renew themselves.
+
+4. **Never set `GATEWAY_OAUTH_TOKEN_TTL=0`.** An immortal access token suppresses
+   refresh-token issuance entirely, because there is nothing to refresh. You would
+   get back exactly the situation this release fixed, plus a token that never
+   expires.
+
+### New setting
+
+`GATEWAY_OAUTH_REFRESH_TTL`, seconds, default `7776000` (90 days). The default is
+fine and you do not need to set it. `0` makes refresh tokens non-expiring, which is
+not recommended.
+
+### What to check afterwards
+
+- Discovery lists both grants:
+
+  ```bash
+  curl -s https://<your-host>/.well-known/oauth-authorization-server
+  ```
+
+- The refresh branch is reachable. A bogus token should come back as
+  `400 invalid_grant: unknown_refresh_token`. A `422` instead means the deploy did
+  not take:
+
+  ```bash
+  curl -s -X POST https://<your-host>/oauth/token -d "grant_type=refresh_token&refresh_token=rft_bogus"
+  ```
+
+- Failures are being recorded. Needs an `admin`-scope token, which you mint with
+  `python -m cortex_gateway.tokens_cli admin-key`:
+
+  ```bash
+  curl -s https://<your-host>/admin/auth-failures -H "Authorization: Bearer <admin-token>"
+  ```
+
+### One behavior worth knowing about
+
+Presenting a refresh token that has already been rotated is treated as a leak, not
+a mistake. The legitimate client would be holding the successor, so two parties
+holding the same token means it escaped. The whole rotation family is revoked along
+with every access token for that client, and the connector has to run the browser
+consent flow again. The realistic way to trigger this by accident is restoring a
+connector's token store from a backup or running two copies of a client against one
+token store.
+
+### Known gap this release does not close
+
+`deploy.sh` creates the Container App environment without a log destination, so
+your instance almost certainly retains **no server logs at all**; the only thing
+available is the running replica's in-memory tail, which any restart erases. That
+is why `auth_failures` exists: it is a durable trail for authentication problems
+specifically. Everything else remains undiagnosable after a restart. If you want
+real platform logs, create the environment with `--logs-destination log-analytics`
+and a workspace, and accept the added cost.
