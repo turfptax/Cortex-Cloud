@@ -84,6 +84,69 @@ def update_project(tag: str, body: ProjectIn, _: Principal = Depends(_app)):
     return db.fetchone("SELECT * FROM projects WHERE tag = :t", {"t": tag})
 
 
+# ── Tasks (OPT-3; uuid-idempotent, core-validated) ────────────────────
+# Both routes delegate to corpus_writes.upsert_task, which inherits the
+# core's write contract (uuid idempotency, status vocabulary, the
+# project_tag guard with alias resolution, completed_at stamping). A
+# contract rejection from the core (ERR:) maps to 422 so clients can
+# distinguish "fix your request" from "server down" (they drop 4xx
+# replays and retry 5xx).
+
+
+class TaskIn(BaseModel):
+    uuid: str
+    project_tag: str
+    title: str
+    details: str | None = None
+    priority: int | None = None
+    due_date: str | None = None
+
+
+class TaskPatch(BaseModel):
+    status: str | None = None
+    title: str | None = None
+    details: str | None = None
+    priority: int | None = None
+    due_date: str | None = None
+    proposed: int | None = None   # 0 = accept an overseer-proposed task
+
+
+def _task_write(values: dict):
+    try:
+        return corpus_writes.upsert_task(values)
+    except corpus_writes.CoreWriteError as e:
+        if str(e).startswith("ERR:"):
+            raise HTTPException(422, str(e)[:200])
+        raise
+
+
+@router.post("/tasks")
+def create_task(body: TaskIn, _: Principal = Depends(_app)):
+    _task_write({
+        "uuid": body.uuid, "project_tag": body.project_tag,
+        "title": body.title, "details": body.details or "",
+        "priority": body.priority or 3, "due_date": body.due_date or "",
+        "source": "mobile", "proposed": 0,
+    })
+    row = db.fetchone("SELECT * FROM tasks WHERE uuid = :u", {"u": body.uuid})
+    if not row:
+        raise HTTPException(502, "task write reported success but row absent")
+    return row
+
+
+@router.patch("/tasks/{task_uuid}")
+def update_task(task_uuid: str, body: TaskPatch,
+                _: Principal = Depends(_app)):
+    if not db.fetchone("SELECT uuid FROM tasks WHERE uuid = :u",
+                       {"u": task_uuid}):
+        raise HTTPException(404, f"task not found: {task_uuid}")
+    fields = body.model_dump(exclude_unset=True)
+    if fields:
+        _task_write({"uuid": task_uuid, **fields})
+    return db.fetchone("SELECT * FROM tasks WHERE uuid = :u",
+                       {"u": task_uuid})
+
+
 # ── Notes ─────────────────────────────────────────────────────────────
 
 

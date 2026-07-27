@@ -28,6 +28,44 @@ PULL_KINDS: dict[str, tuple[str, list[str]]] = {
                                     "period_end", "narrative", "created_at"]),
 }
 
+# Pull kinds forwarded to the co-located core's sync plugin instead of
+# read here. The Bell (OPT curator proposals, 2026-07-26) is a mutable
+# SNAPSHOT with an answerable-set filter (undismissed, unarchived,
+# unsnoozed, actionable); that logic lives in the core's _pull_bell and
+# must not be duplicated against the ATTACH read replica. Requires
+# routed (ATTACH) mode; in standalone dev the kind stays unknown.
+ROUTED_PULL_KINDS = frozenset({"bell_notifications"})
+
+# OPT hierarchy snapshot kinds (2026-07-26): organizations, projects,
+# and tasks are MUTABLE (curator merges delete project rows; task status
+# flips), so the insert-only cursor contract cannot carry them. Each
+# pull returns the FULL filtered set (more=False, cursor untouched) and
+# the phone wipes + reinserts its mirror, same semantics as the Bell.
+# Served directly off the ATTACHed read-only corpus: no core round trip
+# and no clamp, because a truncated snapshot would make the phone-side
+# wipe delete rows it never received. SQLite-dialect SQL is fine here:
+# these kinds only exist in the solo-cloud (ATTACH) deployment.
+SNAPSHOT_PULLS: dict[str, str] = {
+    "organizations": (
+        "SELECT o.tag, o.name, o.org_type, o.my_role, o.is_active, "
+        "       o.notes, COALESCE(s.narrative, '') AS narrative "
+        "FROM organizations o "
+        "LEFT JOIN org_summaries s ON s.org_tag = o.tag"),
+    "projects": (
+        "SELECT tag, name, status, priority, description, category, "
+        "       org_tag, github_url, total_hours, collaborators, "
+        "       last_touched, created_at "
+        "FROM projects"),
+    "tasks": (
+        "SELECT uuid, project_tag, title, details, status, priority, "
+        "       due_date, proposed, source, source_ref, completed_at, "
+        "       created_at, updated_at "
+        "FROM tasks "
+        "WHERE status IN ('open', 'in_progress', 'blocked') "
+        "   OR proposed = 1 "
+        "   OR completed_at >= datetime('now', '-7 days')"),
+}
+
 # kind -> insertable columns (phone-authored, append-only)
 PUSH_KINDS: dict[str, list[str]] = {
     "human_journal_entries": ["text", "entry_type", "created_at"],
@@ -113,6 +151,20 @@ class PullIn(BaseModel):
 
 @router.post("/pull")
 def pull(body: PullIn, _: Principal = Depends(_app)):
+    if body.kind in ROUTED_PULL_KINDS and corpus_writes.routed():
+        return corpus_writes.sync_pull(
+            body.device, body.kind, body.cursor, body.limit)
+    if body.kind in SNAPSHOT_PULLS:
+        if not db.has_table(body.kind):
+            return {"ok": True, "kind": body.kind, "rows": [],
+                    "more": False, "next_cursor": body.cursor}
+        rows = db.fetchall(SNAPSHOT_PULLS[body.kind])
+        for r in rows:
+            for k, v in list(r.items()):
+                if hasattr(v, "isoformat"):
+                    r[k] = str(v)
+        return {"ok": True, "kind": body.kind, "rows": rows,
+                "more": False, "next_cursor": body.cursor}
     spec = PULL_KINDS.get(body.kind)
     if spec is None:
         return {"ok": False, "error": f"unknown pull kind: {body.kind}"}
