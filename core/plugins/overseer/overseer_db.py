@@ -1332,6 +1332,23 @@ CREATE INDEX IF NOT EXISTS idx_pull_events_surface
 -- it in the schema bootstrap fails on existing installs because
 -- CREATE TABLE IF NOT EXISTS doesn't add columns to existing tables.
 
+-- OPT-7 (2026-07-26): recall grades per abstraction (R5: the AI's
+-- self-assessment of its own writing, derived and regenerable from
+-- pull_events telemetry; replaced wholesale on every scoring pass).
+CREATE TABLE IF NOT EXISTS abstraction_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL,                 -- org | project | gist
+    key TEXT NOT NULL,
+    window TEXT NOT NULL,                -- 7d | 30d
+    pulls INTEGER NOT NULL DEFAULT 0,
+    organic_pulls INTEGER NOT NULL DEFAULT 0,
+    sufficed INTEGER NOT NULL DEFAULT 0,
+    drilled_past INTEGER NOT NULL DEFAULT 0,
+    followups INTEGER NOT NULL DEFAULT 0,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(level, key, window)
+);
+
 -- Phase 1 (2026-05-27, three-layer architecture seed): gist prompts
 -- as first-class evolving artifacts. The current prompt lives in
 -- prompts.py as a Python constant; this table records every version

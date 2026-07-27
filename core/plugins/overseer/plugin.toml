@@ -444,6 +444,15 @@ loop_org_narrative_min_hours = 24
 # "legacy" to roll back without a deploy.
 project_narrative_gate = "fingerprint"
 
+# OPT-7: recall scoring (Step 9, zero LLM). The quality trigger joins
+# the fingerprint trigger in the ONE narrative_stale queue when an
+# abstraction with enough organic traffic keeps getting drilled past
+# or followed up; grading also orders the refresh queue worst-first.
+loop_recall_scoring = true
+recall_min_organic_pulls = 3
+recall_drill_ratio_threshold = 0.5
+recall_followup_ratio_threshold = 0.5
+
 # Import step reserve (folds task #14): the import drain stops before
 # the last N call slots so downstream steps (task extraction,
 # journal, distill) are never starved by a big backlog.

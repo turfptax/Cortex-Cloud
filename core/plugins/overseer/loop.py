@@ -62,6 +62,7 @@ import curator
 import org_rollup
 import project_summary
 import project_narrative
+import scoring
 import temporal as T_clock
 import temporal_narrative
 
@@ -821,9 +822,24 @@ class OverseerLoop:
                 self._log.exception("org rollup step failed: %s", e)
                 summary["errors"].append("org_rollup: " + str(e)[:200])
 
-        # (Step 9 - temporal cadence - was here. Moved to Step 0 in
-        # Slice 5.5 so time-anchored daily/weekly/monthly narratives
-        # run before any other LLM step claims the day's budget.)
+        # Step 9 (OPT-7): recall scoring. Zero LLM; one pass over the
+        # pull_events union grading every served abstraction. The
+        # quality trigger writes into the SAME narrative_stale queue
+        # as the fingerprint pass (no third trigger system), and the
+        # regen-priority ordering makes grading change WHICH summaries
+        # regenerate first, not spend.
+        if self._cfg.get("loop_recall_scoring", True):
+            try:
+                scoring.run_scoring(
+                    db=self._db, core=self._core, cfg=self._cfg,
+                    summary=summary, upsert=self._core_upsert)
+            except Exception as e:
+                self._log.exception("recall scoring failed: %s", e)
+                summary["errors"].append("scoring: " + str(e)[:200])
+
+        # (The old Step 9, temporal cadence, moved to Step 0 in Slice
+        # 5.5 so time-anchored daily/weekly/monthly narratives run
+        # before any other LLM step claims the day's budget.)
 
         # (Step 10, Category B agent GC, removed in OPT-4b 2026-07-26
         # with the B machinery. b_invocation_transcripts is now a
@@ -1792,11 +1808,24 @@ class OverseerLoop:
         for p in projects:
             groups.setdefault(alias_map.get(p, p), set()).add(p)
 
+        # OPT-7: worst-graded-with-traffic regenerates first. The
+        # scoring pass maintains the ordering; unlisted projects keep
+        # their natural order after the ranked ones.
+        try:
+            priority = json.loads(self._db.get_overseer_state(
+                scoring.PRIORITY_KEY) or "[]")
+            rank = {k: i for i, k in enumerate(priority)}
+            ordered = sorted(groups.items(),
+                             key=lambda kv: rank.get(kv[0],
+                                                     len(rank) + 1))
+        except Exception:
+            ordered = list(groups.items())
+
         regenerated = 0
         regen_cost = 0.0
         regen_failures = 0
         # Single pass; respect per-tick cap.
-        for project, group_names in groups.items():
+        for project, group_names in ordered:
             if regenerated >= max_per_tick or budget.exhausted():
                 break
 
@@ -2666,6 +2695,14 @@ class OverseerLoop:
                 "structure_audit_json")
             if audit_json:
                 curation["structure_audit"] = json.loads(audit_json)
+        except Exception:
+            pass
+        try:
+            # OPT-7: the Curation Scorecard (top/bottom graded,
+            # orphans, honest caveats). Zero LLM; written by Step 9.
+            sc = self._db.get_overseer_state(scoring.SCORECARD_KEY)
+            if sc:
+                curation["recall_scorecard"] = json.loads(sc)
         except Exception:
             pass
         try:
