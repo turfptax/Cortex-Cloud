@@ -20,18 +20,22 @@ RUN npm run build
 # --- Stage 2: the Python runtime ---
 FROM python:3.12-slim
 
-# NB: this list is a THIRD copy of the runtime deps (the others are
-# gateway/requirements.txt and the CI workflows). This copy is the one that
-# actually builds production, so an unpinned entry here ships a broken image
-# even when CI is green. That is exactly what happened on 2026-07-29: bare
-# `mcp` resolved to 2.0.0, which removed mcp.server.fastmcp, and the gateway
-# died at import with the revision still reporting Healthy.
-# Keep the mcp bound in sync with gateway/requirements.txt. Unifying all three
-# onto that file is the real fix and is tracked separately.
-RUN pip install --no-cache-dir \
-    sqlite-vec requests httpx \
-    fastapi "uvicorn[standard]" "mcp>=1.2,<2" pydantic sqlalchemy \
-    python-multipart
+# Runtime deps come from gateway/requirements.txt, which is the SINGLE source
+# of truth: this image and the CI workflows install from the same file, so a
+# pin there protects both. This used to be a hand-copied list, and on
+# 2026-07-29 that drift took production down: it said bare `mcp`, mcp 2.0.0
+# removed mcp.server.fastmcp, and the gateway died at import while CI was green
+# because CI installed a different list again.
+#
+# The three extras below are NOT gateway deps and are why this cannot simply be
+# `-r requirements.txt` alone: they serve the core, which is co-located in this
+# image (sqlite-vec for the vector index, requests for the MCP client, httpx
+# for the gateway's own upstream calls). Anything else belongs in the file.
+COPY gateway/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+        sqlite-vec requests httpx \
+ && python -c "import mcp.server.fastmcp, fastapi, sqlalchemy" \
+ && rm /tmp/requirements.txt
 
 # Litestream for SQLite replication to Azure Blob.
 ADD https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz /tmp/ls.tar.gz
