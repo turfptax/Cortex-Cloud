@@ -72,7 +72,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        # MUST NOT be `no-referrer`. Azure's auth middleware (the platform
+        # http-auth sidecar) runs its own CSRF check on state-changing methods
+        # and validates the REFERER header, not Origin. `no-referrer` strips
+        # Referer from same-origin requests too, so every authenticated POST
+        # from the Hub was rejected before reaching this app, with an empty
+        # body and no access-log line:
+        #   MiddlewareWarning "Cross-site request forgery detected ...
+        #   from referer ''!"  (403, SubStatusCode 60)
+        # That took down the ENTIRE web write surface, not just one route.
+        # `same-origin` keeps the privacy property the docstring is after (a
+        # cross-origin navigation still leaks nothing) while letting our own
+        # pages send the Referer the platform requires.
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
         return resp
 
 
