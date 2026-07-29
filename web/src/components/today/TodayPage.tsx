@@ -24,8 +24,21 @@ export function TodayPage() {
   const [error, setError] = useState(false)
 
   useEffect(() => {
-    apiFetch<{ markdown?: string }>('/overseer/intro?format=markdown')
-      .then((r) => setBrief(proseOnly(r.markdown ?? '')))
+    apiFetch<{ ok?: boolean; error?: string; markdown?: string }>(
+      '/overseer/intro?format=markdown')
+      .then((r) => {
+        // The gateway returns HTTP 200 with {ok:false} when the core is
+        // unreachable or timed out, so a healthy-looking response can still
+        // carry no briefing. Coalescing markdown to '' here used to fall
+        // straight into the empty-corpus copy, i.e. this page told the owner
+        // his corpus was quiet whenever the backend was down. Treat a missing
+        // briefing as a FAILURE to load, never as "you have nothing".
+        if (r.ok === false || r.markdown == null) {
+          setError(true)
+          return
+        }
+        setBrief(proseOnly(r.markdown))
+      })
       .catch(() => setError(true))
   }, [])
 
