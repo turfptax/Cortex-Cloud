@@ -20,9 +20,17 @@ RUN npm run build
 # --- Stage 2: the Python runtime ---
 FROM python:3.12-slim
 
+# NB: this list is a THIRD copy of the runtime deps (the others are
+# gateway/requirements.txt and the CI workflows). This copy is the one that
+# actually builds production, so an unpinned entry here ships a broken image
+# even when CI is green. That is exactly what happened on 2026-07-29: bare
+# `mcp` resolved to 2.0.0, which removed mcp.server.fastmcp, and the gateway
+# died at import with the revision still reporting Healthy.
+# Keep the mcp bound in sync with gateway/requirements.txt. Unifying all three
+# onto that file is the real fix and is tracked separately.
 RUN pip install --no-cache-dir \
     sqlite-vec requests httpx \
-    fastapi "uvicorn[standard]" mcp pydantic sqlalchemy \
+    fastapi "uvicorn[standard]" "mcp>=1.2,<2" pydantic sqlalchemy \
     python-multipart
 
 # Litestream for SQLite replication to Azure Blob.
