@@ -30,7 +30,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test deps
-        run: pip install fastapi "uvicorn[standard]" mcp pydantic sqlalchemy python-multipart httpx pytest
+        # Install the REAL runtime pins, not a hand-copied list. This gate
+        # guards a production deploy, so it must test the dependency set the
+        # image actually installs. See ci.yml for the drift this fixed.
+        run: pip install -r gateway/requirements.txt httpx pytest
       - name: Gateway test suite
         run: cd gateway && python -m pytest -q
 

@@ -17,6 +17,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test deps
-        run: pip install fastapi "uvicorn[standard]" mcp pydantic sqlalchemy python-multipart httpx pytest
+        # Install the REAL runtime pins, not a hand-copied list. This list had
+        # drifted to a bare `mcp`, so CI tested against a different dependency
+        # set than the image installs: mcp 2.0 removed mcp.server.fastmcp and
+        # CI could not see the pin in requirements.txt. Only test-only extras
+        # are added on top.
+        run: pip install -r gateway/requirements.txt httpx pytest
       - name: Gateway test suite
         run: cd gateway && python -m pytest -q
