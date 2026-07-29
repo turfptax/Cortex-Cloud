@@ -62,15 +62,55 @@ jobs:
         run: python deploy/roll.py "${{ steps.build.outputs.tag }}"
 
       - name: Smoke test the live instance
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
         run: |
           set -euo pipefail
-          # give the new revision a moment to take traffic (wake from zero)
-          for i in $(seq 1 10); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://cortex.turfptax.com/mcp || true)
-            [ "$code" = "307" ] && break
+          REV="cortex-solo--${TAG}"
+
+          # STEP 1: wait until THIS deploy's revision is actually serving.
+          # The previous version polled the public URL for a 307, which the OLD
+          # revision satisfies while the new one is still booting. On 2026-07-29
+          # it passed against a healthy old revision, the new (broken) one then
+          # took traffic, and every request 500'd with the deploy already green.
+          # NB: healthState is deliberately NOT used as the gate. A gateway that
+          # crashed at import still reported Healthy, because ACA's injected
+          # default probe hits the ingress port, where the auth sidecar answers.
+          active=""; weight=""
+          for i in $(seq 1 30); do
+            active=$(az containerapp show -g cortex-rg -n cortex-solo \
+              --query "properties.latestRevisionName" -o tsv | tr -d '\r')
+            weight=$(az containerapp revision list -g cortex-rg -n cortex-solo \
+              --query "[?name=='${REV}'].properties.trafficWeight | [0]" \
+              -o tsv | tr -d '\r')
+            if [ "$active" = "$REV" ] && [ "$weight" = "100" ]; then break; fi
             sleep 10
           done
-          curl -fsS https://cortex.turfptax.com/health | grep -q '"ok":true'
+          test "$active" = "$REV" || {
+            echo "::error::active revision is '$active', expected '$REV'"; exit 1; }
+          test "$weight" = "100" || {
+            echo "::error::revision $REV holds '$weight'% of traffic, expected 100"; exit 1; }
+          echo "new revision $REV is serving 100% of traffic"
+
+          # STEP 2: now the assertions mean something, because they are aimed at
+          # the revision we just built. These go through to the app, so a dead
+          # gateway fails them even when the platform calls the revision Healthy.
+          # NB: capture then match, never `curl | grep -q`. grep -q exits on the
+          # first match and SIGPIPEs curl, which under `pipefail` fails the
+          # pipeline even though the assertion PASSED.
+          health=$(curl -fsS https://cortex.turfptax.com/health)
+          printf '%s' "$health" | grep '"ok":true' > /dev/null || {
+            echo "::error::/health did not report ok: $health"; exit 1; }
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST https://cortex.turfptax.com/mcp)" = "307"
           test "$(curl -s -o /dev/null -w '%{http_code}' https://cortex.turfptax.com/api/health)" = "401"
+
+          # STEP 3: prove the APP answered, not the platform in front of it. When
+          # the gateway was down, responses carried only date /
+          # strict-transport-security / x-ms-middleware-request-id. Only uvicorn
+          # sets Server, so this single header separates "app is up" from
+          # "something upstream replied for it".
+          hdrs=$(curl -s -o /dev/null -D - https://cortex.turfptax.com/api/health)
+          printf '%s' "$hdrs" | grep -i '^server: uvicorn' > /dev/null || {
+            echo "::error::no uvicorn Server header, the gateway is not answering"
+            printf '%s\n' "$hdrs"; exit 1; }
           echo "smoke test passed"
