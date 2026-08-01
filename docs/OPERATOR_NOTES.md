@@ -12,6 +12,46 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-01: a corrupt gateway.db replica can stop your instance booting
+
+**If you run an instance, pull master.** This was a ~2 day outage caused by code
+in `deploy/`, not by anything in the Azure account.
+
+### What you would see
+
+The app accepts connections and returns nothing. Every revision wedges at
+`NotRunning - "System Identity Container is still running."` with all containers
+`Started: False` and 0 restarts. The revision still reports `Healthy`. Rebuilding
+does not help. The scheduled tick job fails on every run.
+
+### Cause
+
+`deploy/litestream-restore.sh` ran `set -e` over all three databases. If
+`gateway.db`'s replica has a broken WAL generation, litestream exits 1, the init
+container dies, and the four main containers never start. The corpus is fine the
+whole time. The least valuable database takes the product down.
+
+### Fix
+
+Already on master: the restore step now aborts only for databases that cannot be
+rebuilt (`cortex.db`, `overseer.db`) and warns-and-continues for `gateway.db`.
+Pull and redeploy.
+
+If you are stuck right now, delete just the `gateway.db/` prefix from your
+litestream blob container. Leave `cortex.db/` and `overseer.db/` alone. The app
+recreates `gateway.db` on boot and connected clients reconnect once.
+
+### Two things worth doing on your own deployment
+
+- **`deploy.sh` creates the managed environment with no log destination**, so you
+  retain no server logs at all. Attaching a Log Analytics workspace is what
+  finally exposed this error, after three wrong hypotheses. Create the
+  environment with `--logs-workspace-id` / `--logs-workspace-key`.
+- **Alert on repeated tick-job failure.** It was the earliest signal here, about
+  a day before anyone noticed, and nothing surfaced it.
+
+Full write-up: [POSTMORTEM_2026-08-01_restore_outage.md](POSTMORTEM_2026-08-01_restore_outage.md).
+
 ## 2026-07-27 (commit a3103d2): OAuth refresh tokens + durable auth-failure log
 
 ### Why it shipped
