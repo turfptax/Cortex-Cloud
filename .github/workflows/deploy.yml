@@ -66,7 +66,7 @@ jobs:
           TAG: ${{ steps.build.outputs.tag }}
         run: |
           set -euo pipefail
-          REV="cortex-solo--${TAG}"
+          REV="cortex-solo2--${TAG}"
 
           # STEP 1: wait until THIS deploy's revision is actually serving.
           # The previous version polled the public URL for a 307, which the OLD
@@ -78,9 +78,9 @@ jobs:
           # default probe hits the ingress port, where the auth sidecar answers.
           active=""; weight=""
           for i in $(seq 1 30); do
-            active=$(az containerapp show -g cortex-rg -n cortex-solo \
+            active=$(az containerapp show -g cortex-rg -n cortex-solo2 \
               --query "properties.latestRevisionName" -o tsv | tr -d '\r')
-            weight=$(az containerapp revision list -g cortex-rg -n cortex-solo \
+            weight=$(az containerapp revision list -g cortex-rg -n cortex-solo2 \
               --query "[?name=='${REV}'].properties.trafficWeight | [0]" \
               -o tsv | tr -d '\r')
             if [ "$active" = "$REV" ] && [ "$weight" = "100" ]; then break; fi

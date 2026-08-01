@@ -12,7 +12,10 @@ import sys
 import tempfile
 
 RG = "cortex-rg"
-APP = "cortex-solo"
+# Rebuilt 2026-08-01 into cortex-solo-env2 after a corrupt gateway.db
+# replica wedged the original app's restore init container. The old
+# cortex-solo / cortex-solo-env pair is dead; do not roll it.
+APP = "cortex-solo2"
 REGISTRY = "cortexacr47df.azurecr.io"
 
 
