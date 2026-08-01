@@ -1,6 +1,24 @@
 # Runtime deps for Azure App Service (Oryx build). Mirrors pyproject, plus the
 # pure-Python SQL Server driver so no system ODBC driver is needed on the host.
 fastapi>=0.115
+# Starlette is a TRANSITIVE dep (via fastapi), and fastapi declares only
+# `starlette>=0.46.0` with no upper bound, so nothing here constrained it and
+# nothing was watching it. Pinned explicitly as a security FLOOR, not a
+# preference. Below 1.3.1 the shipped set is exposed to, among others:
+#   CVE-2026-48710  missing Host header validation poisons request.url.path
+#                   and bypasses PATH-BASED security checks (fixed 1.0.1).
+#                   This gateway makes auth decisions on the path in several
+#                   places (_HUMAN_PATHS, the /api login gate, the overseer
+#                   facade's traversal confinement), so it is squarely in
+#                   scope rather than theoretical.
+#   CVE-2026-54283  request.form() limits silently ignored -> DoS (1.3.1).
+#                   /oauth/token parses Form() input.
+#   CVE-2025-62727  O(n^2) DoS via Range header in FileResponse (0.49.1).
+#                   StaticFiles serves the SPA.
+#   CVE-2025-54121  multipart large-file DoS (0.47.2). Chat upload is multipart.
+# Raise this floor when the next advisory lands; the daily CVE scan
+# (.github/workflows/cve-scan.yml) is what tells you.
+starlette>=1.3.1
 uvicorn[standard]>=0.30
 # mcp 2.0.0 (2026-07-28) removed mcp.server.fastmcp, which
 # cortex_gateway/mcp_server.py imports. Without the upper bound a
