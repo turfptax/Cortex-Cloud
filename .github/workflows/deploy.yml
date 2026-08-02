@@ -43,6 +43,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Deploy targets are repo variables, not constants in the tree. This
+      # repo is public, so hardcoding them published an infrastructure
+      # inventory and aimed every fork's pipeline at the reference instance.
+      # Fail here, before login and before any build, if one is missing: an
+      # empty resource name would otherwise surface as a confusing az error
+      # halfway through a deploy.
+      - name: Preflight - required repo variables are set
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACR: ${{ vars.ACR_NAME }}
+          APP: ${{ vars.CONTAINER_APP_NAME }}
+          URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          set -eu
+          missing=""
+          [ -n "$RG" ]  || missing="$missing AZURE_RESOURCE_GROUP"
+          [ -n "$ACR" ] || missing="$missing ACR_NAME"
+          [ -n "$APP" ] || missing="$missing CONTAINER_APP_NAME"
+          [ -n "$URL" ] || missing="$missing PUBLIC_URL"
+          if [ -n "$missing" ]; then
+            echo "::error::missing repo variable(s):$missing"
+            echo "Set them under Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          echo "deploy target: $APP in $RG, registry $ACR, public URL $URL"
+
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -55,18 +81,25 @@ jobs:
         run: |
           TAG="$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          az acr build --registry cortexacr47df \
+          az acr build --registry "${{ vars.ACR_NAME }}" \
             --image cortex-cloud:$TAG --file deploy/Dockerfile .
 
       - name: Roll all containers to the new image
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          CONTAINER_APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
         run: python deploy/roll.py "${{ steps.build.outputs.tag }}"
 
       - name: Smoke test the live instance
         env:
           TAG: ${{ steps.build.outputs.tag }}
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          APP: ${{ vars.CONTAINER_APP_NAME }}
+          URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -euo pipefail
-          REV="cortex-solo2--${TAG}"
+          REV="${APP}--${TAG}"
 
           # STEP 1: wait until THIS deploy's revision is actually serving.
           # The previous version polled the public URL for a 307, which the OLD
@@ -78,9 +111,9 @@ jobs:
           # default probe hits the ingress port, where the auth sidecar answers.
           active=""; weight=""
           for i in $(seq 1 30); do
-            active=$(az containerapp show -g cortex-rg -n cortex-solo2 \
+            active=$(az containerapp show -g "$RG" -n "$APP" \
               --query "properties.latestRevisionName" -o tsv | tr -d '\r')
-            weight=$(az containerapp revision list -g cortex-rg -n cortex-solo2 \
+            weight=$(az containerapp revision list -g "$RG" -n "$APP" \
               --query "[?name=='${REV}'].properties.trafficWeight | [0]" \
               -o tsv | tr -d '\r')
             if [ "$active" = "$REV" ] && [ "$weight" = "100" ]; then break; fi
@@ -98,18 +131,18 @@ jobs:
           # NB: capture then match, never `curl | grep -q`. grep -q exits on the
           # first match and SIGPIPEs curl, which under `pipefail` fails the
           # pipeline even though the assertion PASSED.
-          health=$(curl -fsS https://cortex.turfptax.com/health)
+          health=$(curl -fsS "$URL"/health)
           printf '%s' "$health" | grep '"ok":true' > /dev/null || {
             echo "::error::/health did not report ok: $health"; exit 1; }
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST https://cortex.turfptax.com/mcp)" = "307"
-          test "$(curl -s -o /dev/null -w '%{http_code}' https://cortex.turfptax.com/api/health)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL"/mcp)" = "307"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$URL"/api/health)" = "401"
 
           # STEP 3: prove the APP answered, not the platform in front of it. When
           # the gateway was down, responses carried only date /
           # strict-transport-security / x-ms-middleware-request-id. Only uvicorn
           # sets Server, so this single header separates "app is up" from
           # "something upstream replied for it".
-          hdrs=$(curl -s -o /dev/null -D - https://cortex.turfptax.com/api/health)
+          hdrs=$(curl -s -o /dev/null -D - "$URL"/api/health)
           printf '%s' "$hdrs" | grep -i '^server: uvicorn' > /dev/null || {
             echo "::error::no uvicorn Server header, the gateway is not answering"
             printf '%s\n' "$hdrs"; exit 1; }

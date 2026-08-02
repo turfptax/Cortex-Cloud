@@ -17,7 +17,10 @@ export function CloudSettingsCard() {
         <dl className="text-sm space-y-2">
           <div className="flex justify-between">
             <dt className="text-text-muted">Corpus</dt>
-            <dd className="text-text-secondary">cortex.turfptax.com</dd>
+            {/* Read the host we are actually served from. This used to be
+                hardcoded to the reference instance, so every other deploy
+                showed someone else's domain as its own corpus. */}
+            <dd className="text-text-secondary">{window.location.host}</dd>
           </div>
           <div className="flex justify-between">
             <dt className="text-text-muted">Access</dt>
@@ -26,7 +29,7 @@ export function CloudSettingsCard() {
           <div className="flex justify-between">
             <dt className="text-text-muted">Config</dt>
             <dd className="text-text-secondary">
-              Managed by the gateway — no local settings
+              Managed by the gateway, no local settings
             </dd>
           </div>
         </dl>
