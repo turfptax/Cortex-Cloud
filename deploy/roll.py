@@ -1,9 +1,23 @@
 #!/usr/bin/env python3
-"""Roll every cortex-cloud container in the cortex-solo Container App to a new
+"""Roll every cortex-cloud container in the target Container App to a new
 image tag, via an ARM template PATCH. Called by the deploy workflow after the
 image is built (the az session is already logged in via OIDC).
 
-Usage: python deploy/roll.py <tag>
+Deploy targets come from the environment, never from constants in this file.
+This repo is public, so hardcoding one operator's resource names published an
+inventory of their infrastructure and, worse, aimed every fork's deploy
+pipeline at somebody else's resources.
+
+Required environment:
+  AZURE_RESOURCE_GROUP   resource group holding the Container App
+  CONTAINER_APP_NAME     the Container App to roll
+  ACR_NAME               registry short name (without .azurecr.io)
+
+In CI these come from repo variables: Settings > Secrets and variables >
+Actions > Variables.
+
+Usage: AZURE_RESOURCE_GROUP=... CONTAINER_APP_NAME=... ACR_NAME=... \\
+       python deploy/roll.py <tag>
 """
 import json
 import os
@@ -11,12 +25,23 @@ import subprocess
 import sys
 import tempfile
 
-RG = "cortex-rg"
-# Rebuilt 2026-08-01 into cortex-solo-env2 after a corrupt gateway.db
-# replica wedged the original app's restore init container. The old
-# cortex-solo / cortex-solo-env pair is dead; do not roll it.
-APP = "cortex-solo2"
-REGISTRY = "cortexacr47df.azurecr.io"
+
+def require_env(name: str) -> str:
+    """Read a required deploy target, failing loudly rather than defaulting.
+
+    There is deliberately no fallback. A wrong-but-plausible default here
+    would aim a production roll at the wrong app, which is far worse than
+    refusing to start.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        sys.exit(
+            f"FATAL: {name} is not set.\n"
+            "roll.py needs AZURE_RESOURCE_GROUP, CONTAINER_APP_NAME and "
+            "ACR_NAME. In CI these come from repo variables under\n"
+            "Settings > Secrets and variables > Actions > Variables."
+        )
+    return value
 
 
 def az(*args: str) -> str:
@@ -25,6 +50,9 @@ def az(*args: str) -> str:
 
 def main() -> int:
     tag = sys.argv[1]
+    RG = require_env("AZURE_RESOURCE_GROUP")
+    APP = require_env("CONTAINER_APP_NAME")
+    REGISTRY = f'{require_env("ACR_NAME")}.azurecr.io'
     image = f"{REGISTRY}/cortex-cloud:{tag}"
     sub = az("account", "show", "--query", "id", "-o", "tsv").strip()
     url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/"

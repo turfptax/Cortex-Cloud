@@ -104,8 +104,10 @@ those two still abort.
 2. Deleted only the corrupt `gateway.db` replica from Blob. Corpus replicas
    untouched.
 3. Built a replacement app in a new environment **with a log destination wired**.
-4. Confirmed the corpus restored: 3,942 gists, 2,214 notes, 3,883 imported
-   sessions, 200 projects, 289 narratives, 195 people.
+4. Confirmed the corpus restored by row-counting every major table (gists,
+   notes, imported sessions, projects, narratives, people) against the
+   pre-outage backup and requiring exact parity, not just a successful exit
+   code from the restore command.
 5. Moved the custom domain, issued a managed certificate, reattached Entra auth
    using the same app registration.
 6. Synced the tick job's token to the rebuilt app's service token.
