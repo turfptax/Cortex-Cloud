@@ -27,6 +27,9 @@ import tomllib
 
 import json
 import shutil
+import datetime as _dt
+import threading as _threading
+import uuid as _uuid
 from pathlib import Path
 
 from plugin_api import Plugin, Route
@@ -410,6 +413,11 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/rollups",               self._http_list_rollups),
             # ── Slice 3e: chat ──────────────────────────────────
             Route("POST", "/chat",                  self._http_chat),
+            # Async chat for MCP callers: a full reply outlives the ~60s
+            # client-side MCP timeout, so start returns immediately and the
+            # work continues on a daemon thread here.
+            Route("POST", "/chat/start",            self._http_chat_start),
+            Route("GET",  "/chat/job",              self._http_chat_job),
             # ── Slice 14.7 (2026-05-22): router-tier chat ───────
             Route("POST", "/quick-chat",            self._http_quick_chat),
             Route("GET",  "/chat/history",          self._http_chat_history),
@@ -4525,6 +4533,190 @@ class OverseerPlugin(Plugin):
         except Exception as e:
             self.api.log.exception("chat failed: %s", e)
             return {"ok": False, "error": str(e)}
+
+    # ── Async chat jobs (MCP-facing) ──────────────────────────────────
+    #
+    # WHY THIS EXISTS: a full overseer reply takes 45 to 70 seconds (measured
+    # 47s and 64s on 2026-08-04). MCP clients give up around 60s with error
+    # -32001, and that ceiling belongs to the CALLER, so no server-side
+    # timeout can raise it. An AI that asks a question worth thinking about
+    # gets punished for the depth of its own question.
+    #
+    # The job runs on a daemon thread here in the core rather than being
+    # awaited across the wire. The core is a stdlib ThreadingHTTPServer, so a
+    # handler thread runs to completion even after its client disconnects,
+    # and respond_to_message already persists both turns durably. That means
+    # the reply survives the caller hanging up, and there is nothing to
+    # reconstruct: the "job record" is the chat thread itself.
+
+    _CHAT_JOB_PREFIX = "chat_job:"
+    _CHAT_JOB_MAX_RUNNING = 2
+    _CHAT_JOB_TTL_DAYS = 7
+    _MCP_THREAD_TITLE = "MCP chat"
+
+    def _chat_job_get(self, job_id):
+        raw = self.overseer_db.get_overseer_state(
+            self._CHAT_JOB_PREFIX + str(job_id))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def _chat_job_put(self, job_id, rec):
+        self.overseer_db.set_overseer_state(
+            self._CHAT_JOB_PREFIX + str(job_id), json.dumps(rec))
+
+    def _chat_jobs_running(self):
+        """Count jobs still marked running. Also the housekeeping pass: any
+        record older than the TTL is dropped on the way past."""
+        n = 0
+        cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                  - _dt.timedelta(days=self._CHAT_JOB_TTL_DAYS)).isoformat()
+        try:
+            rows = self.overseer_db._conn.execute(
+                "SELECT key, value FROM overseer_state WHERE key LIKE ?",
+                (self._CHAT_JOB_PREFIX + "%",)).fetchall()
+        except Exception:
+            return 0
+        for r in rows:
+            try:
+                rec = json.loads(r["value"])
+            except Exception:
+                continue
+            if (rec.get("started_at") or "") < cutoff:
+                try:
+                    self.overseer_db.delete_overseer_state(r["key"])
+                except Exception:
+                    pass
+                continue
+            if rec.get("status") == "running":
+                n += 1
+        return n
+
+    def _http_chat_start(self, payload):
+        """POST /plugins/overseer/chat/start
+
+        Body: {"message": "...", "thread_id"?: int}
+        Returns {ok, job_id, thread_id, status: "running"} immediately.
+
+        Poll /plugins/overseer/chat/job?id=<job_id> for the reply. The reply
+        is also written into the chat thread, so it is never lost even if
+        nobody polls.
+        """
+        if (self.overseer_db is None or self.llm is None
+                or self.core_memory is None):
+            return {"ok": False, "error": "overseer not initialized"}
+        message = (payload.get("message") or "").strip()
+        if not message:
+            return {"ok": False, "error": "missing 'message' field"}
+        if self._chat_jobs_running() >= self._CHAT_JOB_MAX_RUNNING:
+            return {"ok": False, "error": "chat busy: too many jobs running",
+                    "retry_after_s": 30}
+
+        tid = _as_int(payload, "thread_id", 0) or None
+        if tid is None:
+            # A dedicated thread so external AI turns do not interleave with
+            # the owner's Hub conversation. Never becomes the active thread.
+            tid = self.overseer_db.ensure_named_thread(self._MCP_THREAD_TITLE)
+
+        job_id = _uuid.uuid4().hex
+        started = _dt.datetime.now(_dt.timezone.utc).isoformat(
+            timespec="seconds")
+        self._chat_job_put(job_id, {"status": "running", "thread_id": tid,
+                                    "started_at": started})
+
+        try:
+            from config import UPLOADS_DIR
+        except Exception:
+            UPLOADS_DIR = None
+
+        def _run():
+            try:
+                res = respond_to_message(
+                    db=self.overseer_db, llm=self.llm,
+                    core_memory=self.core_memory,
+                    user_message=message,
+                    backend=payload.get("backend"),
+                    max_tokens=_as_int(payload, "max_tokens", 64000, 128000),
+                    temperature=float(payload.get("temperature", 0.7)),
+                    max_history_turns=_as_int(
+                        payload, "max_history_turns", 20, 100),
+                    attachments=[],
+                    uploads_dir=UPLOADS_DIR,
+                    sibling_daily_cap=self._sibling_daily_cap(),
+                    thread_id=tid,
+                )
+                rec = {"status": "done", "thread_id": tid,
+                       "started_at": started,
+                       "assistant_message_id": res.get(
+                           "assistant_message_id"),
+                       "user_message_id": res.get("user_message_id"),
+                       "cost_usd": res.get("cost_usd"),
+                       "model": res.get("model") or ""}
+                if not res.get("ok", True):
+                    rec["status"] = "error"
+                    rec["error"] = str(res.get("error") or "")[:400]
+            except Exception as e:
+                self.api.log.exception("chat job %s failed", job_id)
+                rec = {"status": "error", "thread_id": tid,
+                       "started_at": started, "error": str(e)[:400]}
+            try:
+                self._chat_job_put(job_id, rec)
+            except Exception:
+                self.api.log.exception("chat job %s: could not record result",
+                                       job_id)
+
+        _threading.Thread(target=_run, daemon=True,
+                          name="chat-job-" + job_id[:8]).start()
+        return {"ok": True, "job_id": job_id, "thread_id": tid,
+                "status": "running",
+                "hint": "poll /plugins/overseer/chat/job?id=<job_id> every "
+                        "10-15s; typical reply takes 45-70s"}
+
+    def _http_chat_job(self, payload):
+        """GET /plugins/overseer/chat/job?id=<job_id>"""
+        if self.overseer_db is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        job_id = str(payload.get("id") or "").strip()
+        if not job_id:
+            return {"ok": False, "error": "id query param is required"}
+        rec = self._chat_job_get(job_id)
+        if rec is None:
+            return {"ok": False, "error": "unknown job", "job_id": job_id}
+        out = {"ok": True, "job_id": job_id, "status": rec.get("status"),
+               "thread_id": rec.get("thread_id")}
+        if rec.get("status") == "running":
+            try:
+                started = _dt.datetime.fromisoformat(rec["started_at"])
+                out["elapsed_s"] = int(
+                    (_dt.datetime.now(_dt.timezone.utc)
+                     - started).total_seconds())
+            except Exception:
+                pass
+            out["hint"] = "still thinking; poll again in 10-15s"
+            return out
+        if rec.get("status") == "error":
+            out["error"] = rec.get("error") or "chat failed"
+            return out
+        mid = rec.get("assistant_message_id")
+        if mid:
+            try:
+                row = self.overseer_db._conn.execute(
+                    "SELECT content, model, cost_usd FROM chat_messages "
+                    "WHERE id = ?", (int(mid),)).fetchone()
+                if row:
+                    out["reply"] = row["content"]
+                    out["model"] = row["model"]
+                    out["cost_usd"] = row["cost_usd"]
+            except Exception as e:
+                self.api.log.warning("chat job %s reply fetch failed: %s",
+                                     job_id, e)
+        out.setdefault("reply", "")
+        out.setdefault("model", rec.get("model") or "")
+        out.setdefault("cost_usd", rec.get("cost_usd"))
+        return out
 
     def _http_quick_chat(self, payload):
         """Slice 14.7 (2026-05-22): POST /plugins/overseer/quick-chat
