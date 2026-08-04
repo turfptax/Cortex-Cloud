@@ -17,7 +17,9 @@ import sqlalchemy as sa
 
 from . import corpus_writes, db, grants, sensitivity
 from .auth import Principal
-from .search_maps import ABSTRACTION_KINDS, PREFIX_TARGETS, SEARCH_TARGETS
+from .config import get_settings
+from .search_maps import (ABSTRACTION_KINDS, PREFIX_TARGETS, SEARCH_TARGETS,
+                          resolve_kind)
 
 log = logging.getLogger("cortex_gateway.corpus")
 
@@ -143,7 +145,27 @@ def _gate_decision(principal: Principal, table: str, row: dict) -> str:
         rc = (row.get("category") or "").strip()
         if rc and rc not in principal.category_filter:
             return "withheld"
+    # Notes carry no per-row tier column, so sensitivity.decide() lands them at
+    # 'full' for everyone. Give the owner one env-var lever to clamp raw
+    # captures for CONNECTORS specifically, without touching what their own
+    # phone/Hub/desktop can read and without a code change or deploy.
+    if decision != "withheld" and table == "notes" and principal.is_connector:
+        policy = get_settings().notes_connector_policy
+        if policy != "full":
+            decision = _NOTE_POLICY_RANK_MIN(decision, policy)
     return decision
+
+
+# Ordered most to least permissive; clamping means "no better than policy".
+_DECISION_ORDER = ("full", "sanitized", "title_only", "withheld")
+
+
+def _NOTE_POLICY_RANK_MIN(decision: str, policy: str) -> str:
+    try:
+        return _DECISION_ORDER[max(_DECISION_ORDER.index(decision),
+                                   _DECISION_ORDER.index(policy))]
+    except ValueError:
+        return decision
 
 
 # Public names for cross-module callers (pillars_service reuses the exact
@@ -168,13 +190,16 @@ def _redact_row(decision: str, row: dict, body_cols: list, title_col) -> dict:
 
 
 def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
-           limit: int = 40, surface: str = "rest:/v1/search") -> dict:
+           limit: int = 40, per_kind: int = 5,
+           surface: str = "rest:/v1/search") -> dict:
     if not q or len(q) < 2:
         return {"ok": False, "error": "q must be at least 2 characters"}
 
     if kinds:
-        requested = [k.strip() for k in kinds.split(",") if k.strip()]
-        kinds_to_search = [k for k in requested if k in SEARCH_TARGETS]
+        requested = [resolve_kind(k) for k in kinds.split(",") if k.strip()]
+        # dedupe while preserving caller order (aliases can collide)
+        kinds_to_search = list(dict.fromkeys(
+            k for k in requested if k in SEARCH_TARGETS))
         if not kinds_to_search:
             return {"ok": False, "error": "no recognized kinds; valid: "
                     + ",".join(sorted(SEARCH_TARGETS))}
@@ -182,7 +207,7 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
         kinds_to_search = list(SEARCH_TARGETS.keys())
 
     limit_total = max(1, min(int(limit), 200))
-    per_kind = 5
+    per_kind = max(1, min(int(per_kind), 50))
     like = f"%{q.lower()}%"
     cutoff = None
     if days:
@@ -190,9 +215,16 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
                   ).strftime("%Y-%m-%d %H:%M:%S")
 
     caller, caller_class = caller_identity(principal)
-    hits: list[dict] = []
-    truncated = False
 
+    # PHASE 1: query EVERY requested kind before serving any of them.
+    #
+    # This used to be one loop that appended straight into `hits` and broke out
+    # of the OUTER kind loop once limit_total was reached. With the default
+    # limit of 40 and 11 kinds at 5 rows each, any query matching the first
+    # eight kinds exhausted the budget and the last kinds were never queried at
+    # all. Iteration order put user_note and human, the only two tables the
+    # OWNER authored, at the back of that line. Collect first, ration second.
+    by_kind: dict[str, list[dict]] = {}
     for kind in kinds_to_search:
         table, body_cols, prefix, label = SEARCH_TARGETS[kind]
         if not db.has_table(table):
@@ -218,14 +250,16 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
             log.warning("search target %s failed: %s", table, e)
             continue
 
+        shaped: list[dict] = []
         for row in rows:
             rid = row.get("id")
             decision = _gate_decision(principal, table, row)
             if decision == "withheld":
                 continue  # above the token's ceiling - not even surfaced
             extras = {k: row[k] for k in ("period_label", "kind", "confidence",
-                                          "name", "direction") if row.get(k)}
-            hits.append({
+                                          "name", "direction", "note_type",
+                                          "source", "project") if row.get(k)}
+            shaped.append({
                 "token": f"{prefix}:{rid}" if rid is not None else None,
                 "kind": label,
                 "artifact_table": table,
@@ -237,17 +271,36 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
                 "gated": decision != "full",
                 "extras": extras,
             })
+        if shaped:
+            by_kind[kind] = shaped
+
+    # PHASE 2: round-robin so every kind that matched gets represented before
+    # any kind gets a second row. Truncation now costs each kind its tail
+    # rather than costing the last kinds their existence.
+    hits: list[dict] = []
+    truncated = False
+    depth = 0
+    while len(hits) < limit_total:
+        served_this_pass = False
+        for kind in kinds_to_search:
+            rows = by_kind.get(kind)
+            if not rows or depth >= len(rows):
+                continue
+            hits.append(rows[depth])
+            served_this_pass = True
             if len(hits) >= limit_total:
-                truncated = True
                 break
-        if truncated:
+        if not served_this_pass:
             break
+        depth += 1
+    if sum(len(v) for v in by_kind.values()) > len(hits):
+        truncated = True
 
     for h in hits:
         _record_pull(h["artifact_table"], h["artifact_id"], surface, q, caller,
                      caller_class=caller_class)
 
-    abstractions, gists, raw_refs, seen = [], [], [], set()
+    abstractions, gists, notes, raw_refs, seen = [], [], [], [], set()
     for h in hits:
         if h["kind"] == "gist":
             period = (h.get("extras") or {}).get("period_label") or ""
@@ -262,6 +315,10 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
                                              "rules apply at fetch time."})
                     seen.add(raw_id)
             gists.append(g)
+        elif h["kind"] == "user_note":
+            # Own layer: a note is raw owner input, not interpretation. Callers
+            # that only read abstractions/gists are unaffected by this key.
+            notes.append(h)
         elif h["kind"] in ABSTRACTION_KINDS:
             abstractions.append(h)
         else:
@@ -269,7 +326,8 @@ def search(principal: Principal, q: str, *, kinds: str = "", days: int = 0,
 
     return {"ok": True, "query": q, "kinds_searched": kinds_to_search,
             "hits": hits, "abstractions": abstractions, "gists": gists,
-            "raw_refs": raw_refs, "total": len(hits), "truncated": truncated}
+            "notes": notes, "raw_refs": raw_refs, "total": len(hits),
+            "truncated": truncated}
 
 
 def fetch(principal: Principal, token: str,
@@ -318,6 +376,11 @@ _RECENT_SOURCES = [
     ("temporal_narratives", "narrative", "nar", "temporal_narrative"),
     ("open_questions", "question", "q", "question"),
     ("patterns", "body", "p", "pattern"),
+    # The owner's own material. Both were missing, so "what changed recently"
+    # answered with AI output only: on a day the owner wrote three notes, this
+    # returned nothing but a narrative saying the day was quiet.
+    ("notes", "content", "un", "user_note"),
+    ("human_journal_entries", "text", "hj", "human_journal_entry"),
 ]
 
 

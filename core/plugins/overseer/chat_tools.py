@@ -1489,6 +1489,7 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
             surface="chat:cortex_search",
             caller_id="overseer-chat",
             record_pulls=True,
+            core_memory=core_memory,
         )
 
     if name == "cortex_resolve_token":
@@ -1500,7 +1501,8 @@ def _dispatch(name: str, args: dict, *, db, core_memory,
         except Exception as e:
             return {"error": f"detail module unavailable: {e}"[:200]}
         try:
-            result = detail.resolve_detail(db, token)
+            result = detail.resolve_detail(db, token,
+                                           core_memory=core_memory)
         except detail.TokenError as te:
             return {"ok": False, "token": token, "error": str(te)}
         # Log a pull_event so overseer's own drills feed back into

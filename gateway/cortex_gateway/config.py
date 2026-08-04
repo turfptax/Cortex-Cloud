@@ -227,6 +227,19 @@ class Settings:
         self.connector_full_hosts = frozenset(
             h.lower() for h in raw_full.replace(",", " ").split() if h)
 
+        # Ceiling applied to the owner's own notes when an external connector
+        # reads them. Notes became searchable on 2026-08-04; before that they
+        # were unreachable, so this is the lever for "I changed my mind about
+        # exposing raw captures" WITHOUT a deploy. Owner-scoped tokens (app /
+        # hub / admin) are never clamped. Values: full | sanitized | title_only
+        # | withheld. Default full: notes are the highest-value material in the
+        # corpus and connectors already pass a per-connection approval grant.
+        policy = os.environ.get(
+            "CORTEX_NOTES_CONNECTOR_POLICY", "full").strip().lower()
+        self.notes_connector_policy = (
+            policy if policy in ("full", "sanitized", "title_only", "withheld")
+            else "full")
+
         # HUB / owner-device clients. A client whose OAuth redirect host is in
         # this set is the owner's own app (the phone/Hub): the token exchange
         # mints the elevated `hub` scope (implies `app`) instead of a connector

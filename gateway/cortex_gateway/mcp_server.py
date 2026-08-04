@@ -86,6 +86,15 @@ mcp = FastMCP(
         "at the start of a conversation.\n"
         "- cortex_ingest(content): add an observation back into Cortex (write; "
         "needs a write-enabled token, which is off by default).\n\n"
+        f"{_OWNER}'s OWN words are first-class and are usually the best "
+        "grounding available:\n"
+        "- kind `user_note` (alias `note`), tokens un:<id> - their captures "
+        "from phone, wearable, web and from AI agents writing on their behalf. "
+        "This is also where cortex_ingest writes.\n"
+        "- kind `human`, tokens hj:<id> - their journal entries.\n"
+        "Do not confuse these with the AI-authored kinds `journal` (the "
+        "overseer's own reflection) and `future_note` (the overseer's memos to "
+        "its successors, tokens n:<id>).\n\n"
         "Pillars (structured, first-class):\n"
         f"- cortex_projects_list / cortex_project_get: what {_OWNER} is working on, "
         "with Cortex's rollup stats.\n"
@@ -123,8 +132,9 @@ mcp = FastMCP(
 def search(query: str) -> dict[str, Any]:
     """Search the Cortex memory corpus. Returns a list of result objects,
     each with an `id` (a Cortex token) you can pass to `fetch` for the full
-    content. Covers gists, themes, journal entries, open questions, patterns,
-    drift observations, episodes, narratives."""
+    content. Covers the owner's own notes and journal entries, plus gists,
+    themes, open questions, patterns, drift observations, episodes and
+    narratives."""
     p = _principal()
     res = corpus_service.search(p, query, surface="mcp:search")
     if not res.get("ok"):
@@ -143,7 +153,8 @@ def search(query: str) -> dict[str, Any]:
                                       openWorldHint=False))
 def fetch(id: str) -> dict[str, Any]:
     """Fetch the full content of one Cortex item by its token id (e.g. 'g:123',
-    'q:6'). Returns the body plus linked tokens you can fetch next."""
+    'q:6', 'un:2219' for one of the owner's notes). Returns the body plus
+    linked tokens you can fetch next."""
     p = _principal()
     payload = corpus_service.fetch(p, id, surface="mcp:fetch")
     if not payload.get("ok"):
@@ -174,10 +185,23 @@ def fetch(id: str) -> dict[str, Any]:
                                       openWorldHint=False))
 def cortex_search(query: str, kinds: str = "", days: int = 0,
                   limit: int = 40) -> dict[str, Any]:
-    """Layered search over the Cortex corpus. Returns three layers - abstractions
-    (themes/patterns/questions), gists (per-session summaries), and raw_refs
-    (pointers to source conversations). `kinds` is an optional CSV filter
-    (gist,theme,pattern,drift,question,journal,narrative,episode,blindspot).
+    """Layered search over the Cortex corpus. Returns four layers - notes (the
+    owner's own captures), abstractions (themes/patterns/questions), gists
+    (per-session summaries), and raw_refs (pointers to source conversations).
+
+    `kinds` is an optional CSV filter. Full list:
+      user_note   the owner's own notes (alias: note). Tokens un:<id>.
+      human       the owner's journal entries. Tokens hj:<id>.
+      gist        per-session summaries          theme      recurring themes
+      episode     multi-session arcs             pattern    named patterns
+      drift       drift observations             question   open questions
+      blindspot   known blindspots               narrative  temporal narratives
+      journal     the OVERSEER's own journal (AI-written, not the owner's)
+      future_note the OVERSEER's memos to its successors (AI-written)
+
+    Note the two pairs that are easy to confuse: `user_note` and `human` are
+    what the OWNER wrote; `future_note` and `journal` are what the AI wrote.
+
     `days` restricts to the last N days (0 = all)."""
     return corpus_service.search(_principal(), query, kinds=kinds, days=days,
                                  limit=limit, surface="mcp:cortex_search")
@@ -189,8 +213,10 @@ def cortex_search(query: str, kinds: str = "", days: int = 0,
                                       openWorldHint=False))
 def cortex_read(token: str) -> dict[str, Any]:
     """Resolve a Cortex token to full content plus linked next_tokens for
-    graph traversal. Tokens look like g:123 (gist), q:6 (question),
-    p:44 (pattern), t:9 (theme), nar:12 (temporal narrative)."""
+    graph traversal. Tokens look like un:2219 (one of the owner's notes),
+    hj:12 (owner journal entry), g:123 (gist), q:6 (question), p:44 (pattern),
+    t:9 (theme), nar:12 (temporal narrative), n:44 (an AI memo to future
+    overseers, not an owner note)."""
     return corpus_service.fetch(_principal(), token,
                                 surface="mcp:cortex_read")
 
@@ -199,9 +225,10 @@ def cortex_read(token: str) -> dict[str, Any]:
           annotations=ToolAnnotations(title="Recent Cortex activity",
                                       readOnlyHint=True, openWorldHint=False))
 def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
-    """What changed in the corpus over the last N days - recent gists,
-    journal entries, narratives, questions, patterns. Good for bootstrapping
-    context at the start of a conversation."""
+    """What changed in the corpus over the last N days - the owner's own recent
+    notes and journal entries, plus gists, overseer journal entries,
+    narratives, questions and patterns. Good for bootstrapping context at the
+    start of a conversation."""
     return corpus_service.recent(_principal(), days=days, limit=limit,
                                  surface="mcp:cortex_recent")
 
@@ -212,9 +239,12 @@ def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
                                       idempotentHint=False, openWorldHint=False))
 def cortex_ingest(content: str, kind: str = "note", tags: str = "",
                   project: str = "") -> dict[str, Any]:
-    """Push an observation into Cortex's intake pipeline (the overseer loop
-    later organizes it). Additive (never deletes/overwrites). Available to any
-    approved connection."""
+    """Write an observation into the owner's notes. Additive (never deletes or
+    overwrites). Available to any approved connection.
+
+    What you write is immediately findable: cortex_search(kinds="user_note")
+    and cortex_read("un:<id>") return it, and it shows up in cortex_recent.
+    The response carries the new note id."""
     p = _principal()
     if not grants.can_write(p):
         return {"ok": False, "error": "write requires an approved connection"}
