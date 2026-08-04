@@ -416,6 +416,7 @@ class OverseerPlugin(Plugin):
             # Async chat for MCP callers: a full reply outlives the ~60s
             # client-side MCP timeout, so start returns immediately and the
             # work continues on a daemon thread here.
+            Route("POST", "/notes/backfill-digest", self._http_notes_backfill),
             Route("POST", "/chat/start",            self._http_chat_start),
             Route("GET",  "/chat/job",              self._http_chat_job),
             # ── Slice 14.7 (2026-05-22): router-tier chat ───────
@@ -4534,6 +4535,34 @@ class OverseerPlugin(Plugin):
         except Exception as e:
             self.api.log.exception("chat failed: %s", e)
             return {"ok": False, "error": str(e)}
+
+    def _http_notes_backfill(self, payload):
+        """POST /plugins/overseer/notes/backfill-digest
+
+        Body: {"dry_run"?: bool (DEFAULT TRUE), "from_day"?: "YYYY-MM-DD",
+               "to_day"?: "YYYY-MM-DD", "max_days"?: int,
+               "max_cost_usd"?: float, "exclude_sources"?: [str],
+               "route_questions"?: bool}
+
+        Digests historical days of the owner's captures that the forward tick
+        step will never reach. dry_run defaults to TRUE on purpose: this
+        bypasses the daily budget, so the caller should have to ask for spend
+        explicitly rather than trip into it.
+        """
+        if self.loop is None:
+            return {"ok": False, "error": "overseer loop not running"}
+        dry = payload.get("dry_run", True)
+        if isinstance(dry, str):
+            dry = dry.strip().lower() not in ("0", "false", "no")
+        return self.loop.backfill_notes_digest(
+            from_day=(payload.get("from_day") or None),
+            to_day=(payload.get("to_day") or None),
+            max_days=_as_int(payload, "max_days", 200, 2000),
+            max_cost_usd=float(payload.get("max_cost_usd", 2.0)),
+            exclude_sources=payload.get("exclude_sources"),
+            route_questions=bool(payload.get("route_questions", True)),
+            dry_run=bool(dry),
+        )
 
     # ── Async chat jobs (MCP-facing) ──────────────────────────────────
     #

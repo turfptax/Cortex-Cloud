@@ -93,13 +93,22 @@ def run_mobile_digest(*, core, db, llm, budget=None, log=None,
 
 def run_notes_digest(*, core, db, llm, cfg=None, budget=None, log=None,
                      summary: dict | None = None,
-                     _sources_mode: str = "captures") -> dict:
+                     _sources_mode: str = "captures",
+                     _only_day: str | None = None,
+                     _route_questions: bool = True) -> dict:
     """core: CoreMemoryRO (cortex.db, read-only). db: OverseerDB.
-    Returns {ok, days_digested, gist_ids, skipped_reason?}."""
+    Returns {ok, days_digested, gist_ids, skipped_reason?}.
+
+    `_only_day` digests exactly that local day and does NOT advance the
+    high-water mark. That is for the historical backfill, which walks
+    backwards over days the routine step will never reach: letting it move
+    the mark would make the forward step skip days it has not done.
+    """
     cfg = cfg or {}
     out = {"ok": True, "days_digested": 0, "gist_ids": []}
 
     legacy = _sources_mode == "mobile-only"
+    backfill = _only_day is not None
     state_key = LEGACY_STATE_KEY if legacy else STATE_KEY
     label_prefix = "mobile-notes" if legacy else "user-notes"
     max_days = int(cfg.get("loop_notes_digest_max_days_per_run",
@@ -143,8 +152,11 @@ def run_notes_digest(*, core, db, llm, cfg=None, budget=None, log=None,
             log.info("notes digest seeding high-water mark at %s",
                      done_through)
     days = sorted({d for d in (_local_day(r) for r in rows) if d})
-    todo = [d for d in days if d > done_through and d < today_local]
-    todo = todo[:max_days]
+    if backfill:
+        todo = [d for d in days if d == _only_day]
+    else:
+        todo = [d for d in days if d > done_through and d < today_local]
+        todo = todo[:max_days]
 
     for day in todo:
         if budget is not None and budget.exhausted():
@@ -180,7 +192,8 @@ def run_notes_digest(*, core, db, llm, cfg=None, budget=None, log=None,
         if not gist_text:
             # Empty reply: advance the mark anyway so one bad day cannot
             # wedge the queue forever; the raw notes remain searchable.
-            db.set_overseer_state(state_key, day)
+            if not backfill:
+                db.set_overseer_state(state_key, day)
             continue
 
         gid = db.add_gist(
@@ -195,14 +208,19 @@ def run_notes_digest(*, core, db, llm, cfg=None, budget=None, log=None,
         )
         out["gist_ids"].append(gid)
         out["days_digested"] += 1
-        db.set_overseer_state(state_key, day)
+        if not backfill:
+            db.set_overseer_state(state_key, day)
 
         try:
+            if not _route_questions:
+                raise StopIteration  # skip routing, keep the gist
             route_evidence_to_questions(
                 db=db, llm=llm, gist_text=gist_text, gist_id=gid,
                 budget=budget,
                 contributed_by=("auto:mobile-digest" if legacy
                                 else "auto:notes-digest"))
+        except StopIteration:
+            pass
         except Exception as e:
             if log:
                 log.warning("notes digest routing %s failed: %s", day, e)
