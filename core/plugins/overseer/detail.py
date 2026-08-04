@@ -29,9 +29,17 @@ otherwise):
   b     known_blindspots
   nar   temporal_narratives          (added 2026-05-27, L99 must-fix #1)
   hj    human_journal_entries        (added 2026-05-27, L99 must-fix #1)
+  un    notes, the OWNER's own       (added 2026-08-04; lives in cortex.db,
+        captures                      so it resolves through CoreMemoryRO
+                                      rather than the overseer db handle.
+                                      Do not confuse with n:, which is the
+                                      AI's memos to future overseers.)
 """
 
 import json
+import logging
+
+log = logging.getLogger("plugin.overseer.detail")
 
 
 # ── Token model ───────────────────────────────────────────────────
@@ -55,6 +63,9 @@ _PREFIX_TO_TYPE = {
     "nar":  "temporal_narrative",      # added 2026-05-27
     "hj":   "human_journal_entry",     # added 2026-05-27
     "gp":   "gist_prompt",             # added 2026-05-27 (Phase 1d)
+    "un":   "user_note",               # added 2026-08-04: the OWNER's notes,
+                                       # as opposed to n: which is the AI's
+                                       # memos to future overseers
 }
 
 _TABLE_TO_PREFIX = {
@@ -71,6 +82,7 @@ _TABLE_TO_PREFIX = {
     "temporal_narratives":    "nar",   # added 2026-05-27
     "human_journal_entries":  "hj",    # added 2026-05-27
     "gist_prompts":           "gp",    # added 2026-05-27 (Phase 1d)
+    "notes":                  "un",    # added 2026-08-04 (cortex.db)
 }
 
 
@@ -122,17 +134,24 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else (s[:n].rstrip() + "…")
 
 
-def resolve_detail(db, token: str) -> dict:
-    """Look up a token in overseer.db and return a rich detail dict.
+def resolve_detail(db, token: str, core_memory=None) -> dict:
+    """Look up a token and return a rich detail dict.
+
+    Most tokens resolve against overseer.db. `un:` (the owner's notes) lives
+    in cortex.db, so pass `core_memory` (a CoreMemoryRO handle) to resolve it;
+    without one that prefix reports not-found rather than raising.
 
     Caller is responsible for catching TokenError and packaging it as
     {"ok": False, "error": ...}.
     """
     prefix, rid = parse_token(token)
-    fn = _RESOLVERS.get(prefix)
-    if fn is None:
-        raise TokenError("no resolver for prefix {!r}".format(prefix))
-    payload = fn(db, rid)
+    if prefix == "un":
+        payload = _resolve_user_note(core_memory, rid)
+    else:
+        fn = _RESOLVERS.get(prefix)
+        if fn is None:
+            raise TokenError("no resolver for prefix {!r}".format(prefix))
+        payload = fn(db, rid)
     if payload is None:
         return {
             "ok": False,
@@ -150,6 +169,36 @@ def resolve_detail(db, token: str) -> dict:
 #
 # Each returns the inner detail dict (without "ok"/"token"/"type" - # those are added by resolve_detail). Returns None when the row
 # doesn't exist.
+
+
+def _resolve_user_note(core_memory, nid):
+    """One of the owner's own notes, read from cortex.db.
+
+    Signature differs from the other resolvers on purpose: this table is not
+    in overseer.db, so it takes the CoreMemoryRO handle instead of db.
+    """
+    conn = getattr(core_memory, "_conn", None)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT id, content, tags, project, note_type, source,"
+            " session_id, created_at FROM notes WHERE id = ?", (int(nid),)
+        ).fetchone()
+    except Exception as e:
+        log.warning("user_note resolve failed: %s", e)
+        return None
+    if not row:
+        return None
+    r = dict(row)
+    return {
+        "primary": r,
+        "body": r.get("content") or "",
+        "created_at": r.get("created_at") or "",
+        # Notes are raw material; the graph edges that would link a note to
+        # the gist that digested it are Slice D work.
+        "next_tokens": [],
+    }
 
 
 def _resolve_question(db, qid):

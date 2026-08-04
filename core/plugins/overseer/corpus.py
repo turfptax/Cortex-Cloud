@@ -40,8 +40,12 @@ SEARCH_TARGETS: dict = {
                   "p",     "pattern"),
     "drift":     ("drift_observations",      ["body", "direction"],
                   "d",     "drift"),
-    "note":      ("future_overseer_notes",   ["body"],
-                  "n",     "future_note"),
+    # The OVERSEER's memos to its successors, not the owner's notes. Renamed
+    # from "note" on 2026-08-04: an agent that wrote a note and then searched
+    # kinds="note" got the AI's diary back and could conclude its write failed.
+    # The n: prefix is unchanged so tokens already in circulation still resolve.
+    "future_note": ("future_overseer_notes", ["body"],
+                    "n",   "future_note"),
     "journal":   ("overseer_journal",        ["body"],
                   "j",     "journal_entry"),
     "narrative": ("temporal_narratives",     ["narrative"],
@@ -52,7 +56,31 @@ SEARCH_TARGETS: dict = {
                   "b",     "blindspot"),
     "human":     ("human_journal_entries",   ["text"],
                   "hj",    "human_journal_entry"),
+    # The owner's own notes. These live in cortex.db, not overseer.db, so they
+    # are read through CoreMemoryRO rather than db._conn (see search_corpus).
+    "user_note": ("notes",                   ["content"],
+                  "un",    "user_note"),
 }
+
+# Tables that live in cortex.db (the core engine's own store) rather than
+# overseer.db. Reached via the read-only CoreMemoryRO handle.
+CORE_MEMORY_TABLES = {"notes"}
+
+# What a caller types -> what it means. "note" is the owner's notes because
+# that is what the word means to everyone outside this codebase.
+KIND_ALIASES: dict = {
+    "note": "user_note",
+    "notes": "user_note",
+    "user_notes": "user_note",
+    "future": "future_note",
+    "future_overseer_note": "future_note",
+}
+
+
+def resolve_kind(key: str) -> str:
+    """Map a caller-supplied kind key through the alias table."""
+    k = (key or "").strip().lower()
+    return KIND_ALIASES.get(k, k)
 
 
 _ABSTRACTION_KINDS = {
@@ -80,7 +108,8 @@ def search_corpus(db, q: str, *,
                   days: int = 0,
                   surface: str = "mcp:cortex_search",
                   caller_id: str | None = None,
-                  record_pulls: bool = True) -> dict:
+                  record_pulls: bool = True,
+                  core_memory=None) -> dict:
     """Substring search across the interpretive corpus.
 
     See module docstring for shape + layered-returns semantics.
@@ -100,6 +129,9 @@ def search_corpus(db, q: str, *,
       record_pulls: log a pull_event per hit. Default True; pass False
         for read-only previews that shouldn't influence refinement-loop
         signals.
+      core_memory: CoreMemoryRO handle onto cortex.db. Required to search the
+        user_note kind, whose table lives there rather than in overseer.db.
+        Omit it and that one kind is skipped; every other kind is unaffected.
 
     Returns dict with: ok, query, kinds_searched, hits, abstractions,
     gists, raw_refs, total, truncated.
@@ -108,8 +140,9 @@ def search_corpus(db, q: str, *,
         return {"ok": False, "error": "q must be at least 2 characters"}
 
     if kinds:
-        requested = [k.strip() for k in kinds.split(",") if k.strip()]
-        kinds_to_search = [k for k in requested if k in SEARCH_TARGETS]
+        requested = [resolve_kind(k) for k in kinds.split(",") if k.strip()]
+        kinds_to_search = list(dict.fromkeys(
+            k for k in requested if k in SEARCH_TARGETS))
         if not kinds_to_search:
             return {"ok": False,
                     "error": ("no recognized kinds in 'kinds' param; "
@@ -121,18 +154,28 @@ def search_corpus(db, q: str, *,
     limit_total = _as_int(limit_total, 40, max_value=200)
     days = _as_int(days, 0, max_value=3650)
 
-    hits: list = []
     like_param = f"%{q}%"
-    truncated = False
 
+    # PHASE 1: query every requested kind before serving any of them. This
+    # loop used to append straight into a shared list and break out of the
+    # OUTER kind loop on limit_total, so kinds late in iteration order were
+    # never queried at all once earlier ones filled the budget. user_note and
+    # human, the two tables the OWNER authored, sit at the back of that order.
+    by_kind: dict = {}
     for kind_key in kinds_to_search:
         table, body_cols, prefix, kind_label = SEARCH_TARGETS[kind_key]
+        # notes live in cortex.db; everything else in overseer.db
+        conn = db._conn
+        if table in CORE_MEMORY_TABLES:
+            conn = getattr(core_memory, "_conn", None)
+            if conn is None:
+                continue  # no core handle in this context; skip the kind
         where_parts = [f"{c} LIKE ? COLLATE NOCASE" for c in body_cols]
         params: list = [like_param] * len(body_cols)
         extra_where = ""
         if days:
             try:
-                table_cols = {r[1] for r in db._conn.execute(
+                table_cols = {r[1] for r in conn.execute(
                     f"PRAGMA table_info({table})"
                 ).fetchall()}
             except Exception:
@@ -155,10 +198,11 @@ def search_corpus(db, q: str, *,
         )
         params.append(int(limit_per_kind))
         try:
-            rows = db._conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         except Exception as e:
             log.warning("search target %s failed: %s", table, e)
             continue
+        shaped: list = []
         for r in rows:
             row = dict(r)
             snippet = ""
@@ -191,10 +235,11 @@ def search_corpus(db, q: str, *,
                           or "")
             extras = {}
             for cand in ("period_label", "kind", "confidence",
-                         "name", "instance_id", "direction"):
+                         "name", "instance_id", "direction",
+                         "note_type", "source", "project"):
                 if row.get(cand):
                     extras[cand] = row[cand]
-            hits.append({
+            shaped.append({
                 "token": token,
                 "kind": kind_label,
                 "artifact_table": table,
@@ -203,11 +248,30 @@ def search_corpus(db, q: str, *,
                 "created_at": created_at,
                 "extras": extras,
             })
+        if shaped:
+            by_kind[kind_key] = shaped
+
+    # PHASE 2: round-robin so every kind that matched is represented before any
+    # kind gets a second row. Truncation now costs each kind its tail rather
+    # than costing late kinds their existence.
+    hits: list = []
+    truncated = False
+    depth = 0
+    while len(hits) < limit_total:
+        served = False
+        for kind_key in kinds_to_search:
+            rows_k = by_kind.get(kind_key)
+            if not rows_k or depth >= len(rows_k):
+                continue
+            hits.append(rows_k[depth])
+            served = True
             if len(hits) >= limit_total:
-                truncated = True
                 break
-        if truncated:
+        if not served:
             break
+        depth += 1
+    if sum(len(v) for v in by_kind.values()) > len(hits):
+        truncated = True
 
     # Record pull_events (best-effort; never raises).
     if record_pulls and hits:
@@ -226,6 +290,7 @@ def search_corpus(db, q: str, *,
     # Layered returns per three_layer_architecture_design_seed.md.
     abstractions: list = []
     gists_out: list = []
+    notes_out: list = []
     raw_refs: list = []
     seen_raw_ids: set = set()
     for h in hits:
@@ -248,6 +313,10 @@ def search_corpus(db, q: str, *,
                     })
                     seen_raw_ids.add(raw_id)
             gists_out.append(gist_out)
+        elif kind == "user_note":
+            # Own layer: a note is raw owner input, the material the other
+            # layers are built FROM, not an interpretation of it.
+            notes_out.append(h)
         elif kind in _ABSTRACTION_KINDS:
             abstractions.append(h)
         else:
@@ -262,6 +331,7 @@ def search_corpus(db, q: str, *,
         "hits": hits,
         "abstractions": abstractions,
         "gists": gists_out,
+        "notes": notes_out,
         "raw_refs": raw_refs,
         "total": len(hits),
         "truncated": truncated,

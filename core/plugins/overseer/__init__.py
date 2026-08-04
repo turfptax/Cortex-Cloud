@@ -1260,7 +1260,8 @@ class OverseerPlugin(Plugin):
             return {"ok": False, "error": "token query param is required"}
         caller_id = str(payload.get("caller_id") or "").strip() or None
         try:
-            result = resolve_detail(self.overseer_db, token)
+            result = resolve_detail(self.overseer_db, token,
+                                    core_memory=self.core_memory)
         except TokenError as e:
             return {"ok": False, "error": str(e)}
         except Exception as e:
@@ -2739,6 +2740,9 @@ class OverseerPlugin(Plugin):
             surface="mcp:cortex_search",
             caller_id=caller_id,
             record_pulls=record_pulls,
+            # notes live in cortex.db, not overseer.db; without this handle
+            # the user_note kind is silently skipped
+            core_memory=self.core_memory,
         )
 
     def _http_recent_pull_events(self, payload):
