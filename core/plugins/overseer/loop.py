@@ -623,8 +623,27 @@ class OverseerLoop:
         # path never sees them; this folds each complete local day of
         # captures into one gist + question routing. Highest-value
         # content per the locked pipeline vision.
-        if (self._cfg.get("loop_mobile_digest_enabled", True)
+        # Generalized 2026-08-04: the filter used to be source='mobile',
+        # which excluded the wearable, the voice journal, the web Hub and
+        # every note an AI agent wrote on the owner's behalf. It is now a
+        # denylist of bulk archives, so a new capture route is gleaned by
+        # default instead of being silently dropped.
+        if (self._cfg.get("loop_notes_digest_enabled", True)
                 and not budget.exhausted()):
+            try:
+                import mobile_digest as _md
+                summary["notes_digest"] = _md.run_notes_digest(
+                    core=self._core, db=self._db, llm=self._llm,
+                    cfg=self._cfg, budget=budget, log=self._log,
+                    summary=summary)
+            except Exception as e:
+                self._log.exception("notes digest step failed: %s", e)
+                summary["errors"].append("notes_digest: " + str(e)[:200])
+        elif (self._cfg.get("loop_mobile_digest_enabled", False)
+                and not budget.exhausted()):
+            # Escape hatch: phone-only behaviour on its own high-water mark,
+            # so flipping back does not re-digest days the general step
+            # already covered.
             try:
                 import mobile_digest as _md
                 summary["mobile_digest"] = _md.run_mobile_digest(
@@ -2165,6 +2184,9 @@ class OverseerLoop:
                 local_now=local_now,
                 max_cost_usd=max_cost,
                 triggered_by="loop",
+                core=self._core,
+                include_notes=self._cfg.get(
+                    "loop_narrative_include_notes", True),
             )
         except Exception as e:
             self._log.exception(
@@ -2270,6 +2292,9 @@ class OverseerLoop:
                 local_now=local_now,
                 max_cost_usd=max_cost,
                 triggered_by="loop",
+                core=self._core,
+                include_notes=self._cfg.get(
+                    "loop_narrative_include_notes", True),
             )
         except Exception as e:
             self._log.exception(

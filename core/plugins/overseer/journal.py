@@ -364,6 +364,10 @@ def is_tick_notable(tick: dict) -> bool:
         "imports_summarized", "imports_failed",
         "rollups_generated", "rollups_anomalies",
         "notes_tagged", "classify_changed",
+        # 2026-08-04: a tick whose only work was digesting the owner's
+        # captures is worth writing about. Without this the journal
+        # stayed silent on exactly the days the owner was most active.
+        "note_days_digested",
         # 9.9: surfaces unprocessed Bell-tab responses to the journal.
         "pending_notification_responses",
     )

@@ -586,6 +586,7 @@ def build_context_block(*, working_memory: dict | None,
                         chat_message_count: int,
                         recent_journal: list[dict] | None = None,
                         recent_human_journal: list[dict] | None = None,
+                        recent_user_notes: list[dict] | None = None,
                         core_stats: dict | None = None) -> str:
     """Compose the per-turn context block injected into the system role.
 
@@ -1023,6 +1024,30 @@ def build_context_block(*, working_memory: dict | None,
             lines.append(_trunc(h.get("text", ""), 500))
         lines.append("")
 
+    # ── The user's own notes (2026-08-04) ────────────────────────
+    # Exactly the Slice 10 problem one table over. Until now the only
+    # thing chat knew about `notes` was the row COUNT in core_stats, so
+    # the user could capture a note on their phone, ask "did you see
+    # what I wrote", and get a confidently wrong answer about their own
+    # words. Two of the eleven note_types leaked in through working
+    # memory (decision, reminder); the other nine were invisible.
+    # `search_notes` existed as a tool but only fired if the model
+    # happened to choose it.
+    if recent_user_notes:
+        lines.append("## User's latest captures (their own notes - "
+                     "read carefully)")
+        for n in recent_user_notes:
+            ts = (n.get("created_at") or "")[:19]
+            ntype = n.get("note_type") or "note"
+            src = n.get("source") or "?"
+            # Source is not decoration: 'ai-generated' means an assistant
+            # wrote this observation about the user's work, so quoting it
+            # back as the user's own words would be a fabrication.
+            lines.append("  --- {} type={} source={} ---".format(
+                ts, ntype, src))
+            lines.append(_trunc(n.get("content", ""), 400))
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -1088,6 +1113,9 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
                        uploads_dir: str | None = None,
                        sibling_daily_cap: int = 20,
                        voice_mode: bool = False,
+                       # How many of the user's own recent notes to inline
+                       # into context. 0 disables the section.
+                       recent_notes_limit: int = 8,
                        # ── Slice 14.7 (2026-05-22) ────────────────
                        # Skip persisting the user message - the
                        # router has already persisted it before
@@ -1243,6 +1271,17 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
     chat_count_so_far = db.chat_message_count(tid) - 1  # excluding the just-added
     core_stats = core_memory.get_stats() if core_memory else {}
 
+    # The user's own captures. core_stats already reported "N notes" as a
+    # bare integer, which told the overseer the notes existed while leaving
+    # it unable to read a single one.
+    recent_user_notes = []
+    if core_memory and recent_notes_limit:
+        try:
+            recent_user_notes = core_memory.recent_notes(
+                limit=int(recent_notes_limit))
+        except Exception as _e:
+            log.warning("could not load recent notes: %s", _e)
+
     context_block = build_context_block(
         working_memory=working_memory,
         recent_gists=recent_gists,
@@ -1252,6 +1291,7 @@ def respond_to_message(*, db, llm, core_memory, user_message: str,
         future_notes=future_notes,
         recent_journal=recent_journal,
         recent_human_journal=recent_human_journal,
+        recent_user_notes=recent_user_notes,
         chat_message_count=chat_count_so_far,
         core_stats=core_stats,
     )
