@@ -1214,6 +1214,122 @@ class OverseerLoop:
                 self._log.warning(
                     "reactivation notification failed: %s", e)
 
+    def backfill_notes_digest(self, *, from_day=None, to_day=None,
+                              max_days=200, max_cost_usd=2.0,
+                              exclude_sources=None, dry_run=True,
+                              route_questions=True) -> dict:
+        """Digest historical days of the owner's captures, once.
+
+        The routine tick step only reaches forward from its high-water mark,
+        deliberately: shipping it should not chew through years of history on
+        one tick. This is the other half, run by hand.
+
+        It keeps its OWN bookkeeping and never touches
+        notes_digest_done_through, so a backfill and the routine step cannot
+        fight over the same mark. Days that already have a note-digest gist
+        are skipped, which makes re-running safe and makes an interrupted run
+        resumable.
+
+        dry_run=True (the default) costs nothing and answers the only
+        question worth asking first: how many days, and how much money.
+        """
+        if not self._tick_lock.acquire(blocking=False):
+            return {"ok": False,
+                    "skipped": "a tick or backfill is already running"}
+        try:
+            import mobile_digest as _md
+            excluded = tuple(
+                exclude_sources
+                if exclude_sources is not None
+                else self._cfg.get("loop_notes_digest_exclude_sources",
+                                   _md.DEFAULT_EXCLUDED_SOURCES))
+            rows = _md._fetch_notes(self._core, excluded)
+            days: dict = {}
+            for r in rows:
+                d = _md._local_day(r)
+                if not d:
+                    continue
+                if from_day and d < from_day:
+                    continue
+                if to_day and d > to_day:
+                    continue
+                days.setdefault(d, 0)
+                days[d] += 1
+
+            # Never redo a day that already has a digest gist, whether it
+            # came from this backfill, the routine step, or the old
+            # phone-only step.
+            done = set()
+            try:
+                for row in self._db._conn.execute(
+                        "SELECT period_label FROM summaries_gist WHERE "
+                        "period_label LIKE 'user-notes:%' OR "
+                        "period_label LIKE 'mobile-notes:%'"):
+                    done.add(str(row[0]).split(":", 1)[1])
+            except Exception as e:
+                self._log.warning("backfill: could not read existing "
+                                  "digests: %s", e)
+            todo = sorted(d for d in days if d not in done)
+
+            # Cost model: one gist call per day, plus one routing call when
+            # question routing is on. Gist tier is Gemini Flash, ~$0.001 a
+            # call, so this is an order-of-magnitude answer rather than a
+            # quote.
+            per_day = 0.002 if route_questions else 0.001
+            estimate = round(len(todo) * per_day, 2)
+            summary = {
+                "ok": True, "kind": "notes-backfill", "dry_run": bool(dry_run),
+                "days_pending": len(todo),
+                "days_already_digested": len(done),
+                "notes_in_range": sum(days[d] for d in todo),
+                "first_day": todo[0] if todo else None,
+                "last_day": todo[-1] if todo else None,
+                "excluded_sources": list(excluded),
+                "estimated_cost_usd": estimate,
+                "max_cost_usd": float(max_cost_usd),
+                "days_digested": 0, "gist_ids": [], "errors": [],
+            }
+            if dry_run or not todo:
+                summary["note"] = ("dry run: nothing was generated and "
+                                   "nothing was spent")
+                return summary
+
+            if estimate > float(max_cost_usd):
+                summary["ok"] = False
+                summary["error"] = (
+                    "estimated ${:.2f} exceeds max_cost_usd ${:.2f}; raise "
+                    "the cap or narrow the day range".format(
+                        estimate, float(max_cost_usd)))
+                return summary
+
+            # daily_budget=None is the escape hatch, same as /backfill and
+            # process_imports_targeted. Justified because this is an
+            # owner-initiated one-off with its own hard cost ceiling, not a
+            # routine step that could quietly eat the daily allowance.
+            budget = TickBudget(max_calls=len(todo) * 3 + 10,
+                                max_cost_usd=float(max_cost_usd))
+            for day in todo[:int(max_days)]:
+                if budget.exhausted():
+                    summary.setdefault("skipped_due_to_budget", []).append(day)
+                    break
+                try:
+                    res = _md.run_notes_digest(
+                        core=self._core, db=self._db, llm=self._llm,
+                        cfg=dict(self._cfg,
+                                 loop_notes_digest_exclude_sources=excluded),
+                        budget=budget, log=self._log,
+                        _only_day=day, _route_questions=route_questions)
+                    summary["days_digested"] += res.get("days_digested", 0)
+                    summary["gist_ids"].extend(res.get("gist_ids", []))
+                except Exception as e:
+                    self._log.exception("notes backfill %s failed", day)
+                    summary["errors"].append("{}: {}".format(day, str(e)[:160]))
+            summary["cost_usd"] = round(budget.cost_used, 4)
+            summary["calls"] = budget.calls_used
+            return summary
+        finally:
+            self._tick_lock.release()
+
     def process_imports_targeted(self, *, cwd_likes=None, source_likes=None,
                                   limit=100, max_cost_usd=4.0,
                                   max_calls=None) -> dict:
