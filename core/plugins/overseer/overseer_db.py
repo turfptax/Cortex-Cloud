@@ -4859,6 +4859,30 @@ class OverseerDB(CortexDB):
         self._safe_commit()
         return tid
 
+    def ensure_named_thread(self, title):
+        """Find-or-create a thread by exact title, WITHOUT selecting it.
+
+        create_chat_thread deliberately makes the new thread active because
+        that matches the Hub's "New chat" flow. That is wrong for threads the
+        owner did not open: an external AI starting a conversation would move
+        the pointer under the owner's Hub and redirect their next message into
+        someone else's thread. This keeps the pointer where the owner left it.
+        """
+        t = (title or "").strip()[:120]
+        if not t:
+            return None
+        row = self._conn.execute(
+            "SELECT id FROM chat_threads WHERE title = ? "
+            "ORDER BY id LIMIT 1", (t,)).fetchone()
+        if row:
+            return int(row["id"])
+        with self._write_lock:
+            cur = self._conn.execute(
+                "INSERT INTO chat_threads (title) VALUES (?)", (t,))
+            tid = cur.lastrowid
+        self._safe_commit()
+        return int(tid)
+
     def select_chat_thread(self, thread_id):
         row = self._conn.execute(
             "SELECT id FROM chat_threads WHERE id = ?",
