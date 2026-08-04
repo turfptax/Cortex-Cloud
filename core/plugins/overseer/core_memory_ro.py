@@ -99,10 +99,19 @@ class CoreMemoryRO:
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
     def notes_in_window(self, start_iso, end_iso, *, limit=500):
+        """The owner's captures in a time window.
+
+        Written for periodic digests and then left without a caller for
+        months, which is part of why the daily narrative could describe a
+        day the owner spent writing notes as "quiet, nothing written":
+        nothing ever asked this question. `source` is selected so callers
+        can tell the owner's own words from observations an AI wrote on
+        their behalf.
+        """
         if self._conn is None:
             return []
         rows = self._conn.execute(
-            "SELECT id, content, tags, project, note_type, created_at "
+            "SELECT id, content, tags, project, note_type, source, created_at "
             "FROM notes WHERE created_at >= ? AND created_at < ? "
             "ORDER BY created_at ASC LIMIT ?",
             (start_iso, end_iso, int(limit)),

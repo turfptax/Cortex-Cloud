@@ -104,6 +104,11 @@ PROJECTS TOUCHED TODAY (active in this window):
 YOUR (the user's) JOURNAL ENTRIES TODAY:
 {human_entries_block}
 
+YOUR (the user's) OWN CAPTURES TODAY (notes from phone, wearable, web,
+and observations AI agents logged on your behalf - the tag after the
+note type is the source):
+{user_notes_block}
+
 OPEN QUESTIONS WITH NEW EVIDENCE TODAY:
 {questions_block}
 
@@ -120,11 +125,15 @@ CONSTRAINTS:
   • No bullet lists in the narrative - flowing prose.
   • No "today, the user…" framing - write to the user directly
     in second person, or in a neutral observer voice.
-  • If the user wrote journal entries today, weight them: those
-    are your most authoritative source for what they were
-    actually thinking about.
-  • If the day was quiet (≤1 project touched, no journal entry),
-    say so plainly in one sentence and stop.
+  • If the user wrote journal entries or captures today, weight
+    them: those are your most authoritative source for what they
+    were actually thinking about. Captures tagged 'ai-generated'
+    were written by an assistant observing their work, so treat
+    those as reports about the user, not as the user's own words.
+  • Only call the day quiet if it ACTUALLY was: no projects
+    touched AND no journal entries AND no captures. A day with
+    captures is never a quiet day, whatever the project numbers
+    say.
 
 AUTHORSHIP MARKERS - DO NOT FLATTEN:
 If the inputs above contain text matching `[B:<name>]` or
@@ -138,7 +147,7 @@ to tell B/C work apart from the overseer's own thinking.
 
 
 def gather_daily_context(*, db, period_start, period_end, period_label,
-                          local_now):
+                          local_now, core=None, include_notes=True):
     """Build the data block for the daily prompt.
 
     "What moved today?" needs TODAY-SPECIFIC numbers, not the
@@ -210,6 +219,18 @@ def gather_daily_context(*, db, period_start, period_end, period_label,
         start_utc_iso=period_start, end_utc_iso=period_end,
     )
 
+    # The owner's own captures. Omitting these is why a day spent writing
+    # notes could be narrated as "quiet day, nothing written": the gatherer
+    # only ever looked at imported sessions, the journal table, and
+    # questions, so the owner's actual words were invisible to it.
+    user_notes = []
+    if include_notes and core is not None:
+        try:
+            user_notes = core.notes_in_window(period_start, period_end,
+                                              limit=60)
+        except Exception:
+            user_notes = []
+
     # Questions whose last_evidence_at falls in window - these saw
     # something filed against them today.
     try:
@@ -227,6 +248,7 @@ def gather_daily_context(*, db, period_start, period_end, period_label,
     return {
         "projects": projects,
         "human_entries": human_entries,
+        "user_notes": user_notes,
         "questions": questions,
         "period_label": period_label,
         "tz_offset": local_now.strftime("%z"),
@@ -276,6 +298,26 @@ def _format_human_entries(entries):
     return "\n".join(out)
 
 
+def _format_user_notes(notes):
+    """The owner's captures, tagged with where each came from.
+
+    Source matters for weighting: an 'ai-generated' line is an observation
+    an AI wrote about the owner's work, not something the owner said.
+    """
+    if not notes:
+        return "  (none)"
+    out = []
+    for n in notes[:20]:
+        ts = (n.get("local_created_at") or n.get("created_at") or "")[:16]
+        kind = n.get("note_type") or "note"
+        src = n.get("source") or "?"
+        text = (n.get("content") or "").strip().replace("\n", " ")
+        if len(text) > 240:
+            text = text[:240] + " […]"
+        out.append("  - [{}] ({}/{}) {}".format(ts, kind, src, text))
+    return "\n".join(out)
+
+
 def _format_questions(questions):
     if not questions:
         return "  (no question saw new evidence today)"
@@ -298,11 +340,12 @@ def _short_path(p):
 
 def generate_daily(*, db, llm, period_start, period_end, period_label,
                     local_now, max_cost_usd=None,
-                    triggered_by="loop"):
+                    triggered_by="loop", core=None, include_notes=True):
     """Compose + Sonnet-call + return result dict (NOT persisted -     caller decides whether to apply, same pattern as project_narrative)."""
     ctx = gather_daily_context(
         db=db, period_start=period_start, period_end=period_end,
         period_label=period_label, local_now=local_now,
+        core=core, include_notes=include_notes,
     )
     prompt = DAILY_PROMPT_TEMPLATE.format(
         principle=SHARED_PRINCIPLE,
@@ -312,6 +355,7 @@ def generate_daily(*, db, llm, period_start, period_end, period_label,
         period_end=period_end,
         projects_block=_format_projects_for_daily(ctx["projects"]),
         human_entries_block=_format_human_entries(ctx["human_entries"]),
+        user_notes_block=_format_user_notes(ctx.get("user_notes") or []),
         questions_block=_format_questions(ctx["questions"]),
     )
     return _call_llm(llm=llm, prompt=prompt, kind="daily",
@@ -717,7 +761,7 @@ def _format_stalled_projects(stalled):
 
 def generate_weekly(*, db, llm, period_start, period_end, period_label,
                      local_now, max_cost_usd=None,
-                     triggered_by="loop"):
+                     triggered_by="loop", core=None, include_notes=True):
     ctx = gather_weekly_context(
         db=db, period_start=period_start, period_end=period_end,
         period_label=period_label, local_now=local_now,
@@ -908,7 +952,7 @@ def _format_weeklies(weeklies):
 
 def generate_monthly(*, db, llm, period_start, period_end, period_label,
                       local_now, max_cost_usd=None,
-                      triggered_by="loop"):
+                      triggered_by="loop", core=None, include_notes=True):
     ctx = gather_monthly_context(
         db=db, period_start=period_start, period_end=period_end,
         period_label=period_label, local_now=local_now,
@@ -1152,7 +1196,7 @@ def _format_monthlies(monthlies):
 
 def generate_yearly(*, db, llm, period_start, period_end, period_label,
                      local_now, max_cost_usd=None,
-                     triggered_by="loop"):
+                     triggered_by="loop", core=None, include_notes=True):
     ctx = gather_yearly_context(
         db=db, period_start=period_start, period_end=period_end,
         period_label=period_label, local_now=local_now,

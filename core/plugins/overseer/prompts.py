@@ -236,6 +236,41 @@ because the layers were built for it.
 # captures becomes one gist via this prompt, then routes against open
 # questions like any other gist.
 
+def notes_digest_prompt(*, day: str, n_notes: int, body: str,
+                        sources=None) -> str:
+    """One day of the owner's captures, from every capture route.
+
+    Supersedes mobile_digest_prompt, which assumed a phone. Captures now
+    arrive from the wearable, the voice journal, the web Hub, and from AI
+    agents writing on the owner's behalf, so each line carries its source
+    and the model is told how to weigh them. That distinction matters: an
+    ai-generated line is an observation ABOUT the owner, not something the
+    owner said, and flattening the two would let the corpus quote an AI
+    back to itself as though it were the owner's own words.
+    """
+    src_note = ""
+    if sources:
+        src_note = ("\nEach line is tagged (note_type/source). Sources seen "
+                    "today: {}. Lines from 'ai-generated' were written by an "
+                    "AI assistant observing the user's work, not by the user; "
+                    "weight the user's own captures higher and attribute "
+                    "carefully.\n".format(", ".join(sources)))
+    return (
+        "You are summarizing ONE DAY of the user's own captures into one or "
+        "two sentences that capture THE CHANGE.\n\n"
+        "These are first-person thoughts and observations: decisions, "
+        "events, worries, wins, bugs found, things they want remembered. "
+        "What changed about their standing situation across this day? Keep "
+        "concrete names, projects, and events; drop filler and "
+        "pleasantries. If the captures are purely routine with no net "
+        "change, say so plainly.\n"
+        "{src_note}\n"
+        "Day: {day}\nCaptures: {n}\n\n{body}\n\n"
+        "Write only the one-or-two-sentence digest. No preamble. No quotes."
+        + MARKER_PRESERVATION_RULE
+    ).format(day=day, n=n_notes, body=body, src_note=src_note)
+
+
 def mobile_digest_prompt(*, day: str, n_notes: int, body: str) -> str:
     return (
         "You are summarizing ONE DAY of the user's own quick captures "

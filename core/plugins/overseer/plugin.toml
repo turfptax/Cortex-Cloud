@@ -298,6 +298,27 @@ loop_auto_classify = true
 loop_run_rollups = true
 loop_rollups_max_per_tick = 5           # cheap (Sonnet) but still bound
 
+# ── Notes digest (step 1c.7, generalized 2026-08-04) ──────────────
+# Folds each COMPLETE local day of the owner's sessionless captures into one
+# gist, then routes it against open questions. Was phone-only
+# (source='mobile'), which excluded the wearable, voice journal, web Hub and
+# every note an AI agent wrote on the owner's behalf.
+#
+# The filter is a DENYLIST so a new capture route is gleaned by default. Bulk
+# archives are excluded because they are imports, not captures: the twitter
+# archive alone is ~1,500 notes over hundreds of past days. They stay
+# searchable; digesting them is a separate owner-approved backfill.
+loop_notes_digest_enabled = true
+loop_notes_digest_exclude_sources = ["twitter", "google-takeout", "tory_life.db"]
+loop_notes_digest_seed_days = 7         # how far back the FIRST run reaches
+loop_notes_digest_max_days_per_run = 7  # per-tick cap, ~$0.002/day at gist tier
+# Escape hatch only. Set true (and the above false) to fall back to the
+# phone-only step; it keeps its own high-water mark so days are not redone.
+loop_mobile_digest_enabled = false
+# Include the owner's captures in daily narratives and chat context.
+loop_narrative_include_notes = true
+chat_context_recent_notes = 8           # 0 disables the chat section
+
 # ── Slice 3e: daily budget (UTC midnight rollover) ────────────────
 # Composes with loop_max_*_per_tick. Manual /backfill bypasses this.
 # At default $1.00/day = ~20 Opus summaries OR ~250 Sonnet calls.
