@@ -20,11 +20,13 @@ a contextvar that tools read for scope checks + pull-event attribution.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from typing import Any
 from urllib.parse import urlparse
 
-from mcp.server.fastmcp import FastMCP
+import httpx
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
@@ -85,7 +87,14 @@ mcp = FastMCP(
         "- cortex_recent(days): what changed lately; good for bootstrapping context "
         "at the start of a conversation.\n"
         "- cortex_ingest(content): add an observation back into Cortex (write; "
-        "needs a write-enabled token, which is off by default).\n\n"
+        "needs a write-enabled token, which is off by default).\n"
+        "- cortex_chat(message): ask the overseer itself, with the whole "
+        "corpus in view. Use for synthesis and judgement, not lookups. A "
+        "reply takes 45-70s and the tool sends progress notifications while "
+        "it waits. If your client cannot wait that long, call "
+        "cortex_chat_start and poll cortex_chat_result every 10-15s: that "
+        "path has no time limit and the reply is stored server-side, so it "
+        "survives a disconnect.\n\n"
         f"{_OWNER}'s OWN words are first-class and are usually the best "
         "grounding available:\n"
         "- kind `user_note` (alias `note`), tokens un:<id> - their captures "
@@ -250,6 +259,151 @@ def cortex_ingest(content: str, kind: str = "note", tags: str = "",
         return {"ok": False, "error": "write requires an approved connection"}
     return corpus_service.ingest(p, content=content, kind=kind,
                                  tags=tags or None, project=project or None)
+
+
+# ── Talking to the overseer ───────────────────────────────────────────
+#
+# A full reply takes 45 to 70 seconds (measured 47s and 64s). MCP clients
+# abandon the call around 60s with error -32001, and that ceiling belongs to
+# the CALLER, so raising any server-side timeout does nothing. Two ways out,
+# offered together because neither covers every client:
+#
+#   cortex_chat        emits notifications/progress every 10s. Clients that
+#                      sent a progressToken reset their timer on each one, so
+#                      the whole reply arrives in a single call. Clients that
+#                      did not send one are unaffected and may still time out.
+#   cortex_chat_start  returns a job id immediately; the core keeps thinking
+#   cortex_chat_result on a background thread and persists the reply whether
+#                      or not anyone is still listening. Works everywhere,
+#                      and removes the ceiling entirely.
+
+_CHAT_HEARTBEAT_S = 10.0     # how often to reassure the caller
+_CHAT_SYNC_READ_S = 170.0    # under the hub's 180s core ceiling
+
+
+def _core_client(read: float):
+    s = get_settings()
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=read, write=30.0, pool=5.0),
+        auth=(s.core_username, s.core_token))
+
+
+@mcp.tool(title="Talk to Cortex",
+          annotations=ToolAnnotations(title="Talk to Cortex",
+                                      readOnlyHint=False,
+                                      destructiveHint=False,
+                                      idempotentHint=False,
+                                      openWorldHint=False))
+async def cortex_chat(message: str, ctx: Context) -> dict[str, Any]:
+    """Ask the Cortex overseer a question and get its considered reply.
+
+    This is the conversational counterpart to the read tools. The overseer
+    answers with the whole corpus in view: working memory, recent gists and
+    themes, open questions, the owner's own notes. Use it when you want a
+    synthesis or a judgement rather than a lookup, and prefer the read tools
+    when you just need a fact (this costs real money per turn).
+
+    TIMING MATTERS: a reply typically takes 45 to 70 seconds. This tool sends
+    progress notifications while it waits, which most clients honour by
+    extending their timeout. If your client times out anyway, or if you want
+    to do other work meanwhile, use cortex_chat_start and poll
+    cortex_chat_result instead. The answer is never lost either way: it is
+    written into the Cortex chat thread as soon as it is ready.
+    """
+    p = _principal()
+    if not grants.can_write(p):
+        return {"ok": False,
+                "error": "chat requires an approved connection"}
+    s = get_settings()
+
+    async def _call():
+        async with _core_client(_CHAT_SYNC_READ_S) as client:
+            r = await client.post(f"{s.core_url}/plugins/overseer/chat",
+                                  json={"message": message})
+            return r.json()
+
+    task = asyncio.create_task(_call())
+    waited = 0.0
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=_CHAT_HEARTBEAT_S)
+        if done:
+            break
+        waited += _CHAT_HEARTBEAT_S
+        try:
+            # No total: the wait is open-ended, and a fake percentage that
+            # creeps toward a number it never reaches is worse than none.
+            await ctx.report_progress(
+                progress=waited, total=None,
+                message=f"Cortex is thinking ({int(waited)}s)")
+        except Exception:
+            pass  # a client that cannot receive progress still gets the reply
+    try:
+        return task.result()
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "the overseer did not finish in time",
+                "hint": "call cortex_chat_start, then poll "
+                        "cortex_chat_result; that path has no time limit"}
+    except Exception as e:
+        return {"ok": False,
+                "error": f"Cannot reach core: {type(e).__name__}"}
+
+
+@mcp.tool(title="Start a Cortex chat (async)",
+          annotations=ToolAnnotations(title="Start a Cortex chat (async)",
+                                      readOnlyHint=False,
+                                      destructiveHint=False,
+                                      idempotentHint=False,
+                                      openWorldHint=False))
+async def cortex_chat_start(message: str) -> dict[str, Any]:
+    """Ask the overseer a question without waiting for the answer.
+
+    Returns a job_id straight away. The overseer keeps thinking server-side
+    and stores its reply even if you disconnect, so this path has no time
+    limit and suits questions worth several minutes of thought.
+
+    Poll cortex_chat_result(job_id) every 10 to 15 seconds. Expect `running`
+    for the first 45 to 70 seconds on a typical question.
+    """
+    p = _principal()
+    if not grants.can_write(p):
+        return {"ok": False,
+                "error": "chat requires an approved connection"}
+    s = get_settings()
+    try:
+        async with _core_client(15.0) as client:
+            r = await client.post(
+                f"{s.core_url}/plugins/overseer/chat/start",
+                json={"message": message})
+            return r.json()
+    except Exception as e:
+        return {"ok": False,
+                "error": f"Cannot reach core: {type(e).__name__}"}
+
+
+@mcp.tool(title="Collect a Cortex chat reply",
+          annotations=ToolAnnotations(title="Collect a Cortex chat reply",
+                                      readOnlyHint=True, openWorldHint=False))
+async def cortex_chat_result(job_id: str) -> dict[str, Any]:
+    """Collect the reply for a cortex_chat_start job.
+
+    status is `running` (poll again in 10 to 15s; `elapsed_s` tells you how
+    long it has been thinking), `done` (the reply is in `reply`), or `error`.
+    A finished reply also lives permanently in the Cortex chat thread, so a
+    lost job_id does not lose the answer.
+    """
+    p = _principal()
+    if not grants.can_write(p):
+        return {"ok": False,
+                "error": "chat requires an approved connection"}
+    s = get_settings()
+    try:
+        async with _core_client(10.0) as client:
+            r = await client.get(f"{s.core_url}/plugins/overseer/chat/job",
+                                 params={"id": job_id})
+            return r.json()
+    except Exception as e:
+        return {"ok": False,
+                "error": f"Cannot reach core: {type(e).__name__}"}
 
 
 # ── Pillar tools: Projects / Rules / Skills ───────────────────────────
