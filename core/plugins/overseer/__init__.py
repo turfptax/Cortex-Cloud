@@ -1755,6 +1755,7 @@ class OverseerPlugin(Plugin):
                 period_label=period_label,
                 local_now=local_now,
                 triggered_by="manual",
+                core=self.core_memory,
             )
         except Exception as e:
             log.exception("temporal generate crashed")
