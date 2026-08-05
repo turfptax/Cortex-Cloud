@@ -66,18 +66,78 @@ KEEP = ("_litestream_lock", "_litestream_seq")
 # per database, so copying it would fail outright.
 DROP_EXTRA = ("people",)
 
-# sqlite-vec virtual table plus its shadow tables. A virtual table
-# cannot be carried by INSERT..SELECT; it needs the extension loaded on
-# the destination and a rebuild. Handled separately, by decision, not by
-# this script.
+# sqlite-vec virtual table plus its shadow tables. The vec0 table is
+# copied by its OWN path, not the generic one: the shadow tables are
+# managed by the extension and must never be touched directly, so only
+# the virtual table is named and its shadows follow automatically.
+#
+# Leaving the vectors behind was considered and rejected. It would mean
+# overseer.db has to survive, which is the entire thing this merge
+# exists to stop. Re-embedding was the fallback; it is not needed. A
+# direct copy of 3,943 vectors took 0.1s in rehearsal and a k-nearest
+# probe against the copy returned the same neighbours at the same
+# distances as the source.
 VEC_PREFIX = "vec_"
+VEC_TABLE = "vec_gists"
 
 
-def connect(path, *, readonly=False):
+def connect(path, *, readonly=False, vectors=False):
     uri = "file:{}?mode=ro".format(path) if readonly else path
     conn = sqlite3.connect(uri, uri=readonly, timeout=30)
     conn.row_factory = sqlite3.Row
+    if vectors:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
     return conn
+
+
+def copy_vectors(conn, src_objs, log):
+    """Move the vec0 table. Its shadow tables come along by themselves.
+
+    A virtual table cannot be rebuilt by copying its shadows, so this
+    replays the CREATE VIRTUAL TABLE and inserts through the extension,
+    which is what keeps the index consistent. Requires sqlite-vec loaded
+    on BOTH connections, which is why the caller opens them that way.
+    """
+    ddl = next((r["sql"] for r in src_objs
+                if r["type"] == "table" and r["name"] == VEC_TABLE), None)
+    if not ddl:
+        log("  no {} on the source, nothing to move".format(VEC_TABLE))
+        return 0, 0
+    conn.execute("BEGIN")
+    try:
+        conn.execute('DROP TABLE IF EXISTS main."{}"'.format(VEC_TABLE))
+        conn.execute(ddl)
+        conn.execute(
+            "INSERT INTO main.{0} (gist_id, embedding)"
+            " SELECT gist_id, embedding FROM src.{0}".format(VEC_TABLE))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    sn = conn.execute("SELECT COUNT(*) FROM src.{}".format(VEC_TABLE)).fetchone()[0]
+    dn = conn.execute("SELECT COUNT(*) FROM main.{}".format(VEC_TABLE)).fetchone()[0]
+    log("  copied {:<38} {:>8} rows".format(VEC_TABLE, dn))
+    return sn, dn
+
+
+def verify_vectors(conn, log):
+    """Row count is not enough for an index: a vector table can hold
+    every row and still return different neighbours. Probe it."""
+    probe = conn.execute(
+        "SELECT embedding FROM src.{} LIMIT 1".format(VEC_TABLE)).fetchone()
+    if probe is None:
+        return True
+    q = ("SELECT gist_id FROM {}.{} WHERE embedding MATCH ? AND k = 5"
+         " ORDER BY distance")
+    a = [r[0] for r in conn.execute(q.format("src", VEC_TABLE), (probe[0],))]
+    b = [r[0] for r in conn.execute(q.format("main", VEC_TABLE), (probe[0],))]
+    ok = a == b
+    log("  nearest-neighbour probe {}".format(
+        "matches the source" if ok else "DIFFERS: {} vs {}".format(a, b)))
+    return ok
 
 
 def master(conn, schema="main"):
@@ -216,7 +276,11 @@ def main():
     # A writer still holding the source would make the copy a snapshot of
     # a moving target. BEGIN IMMEDIATE proves exclusivity instead of
     # assuming it.
-    src_rw = connect(args.source)
+    # vectors=True even though this connection only ever drops: DROP
+    # TABLE on a vec0 table has to go through the extension so it can
+    # clean up its own shadow tables, and without it the drop fails with
+    # "no such module: vec0".
+    src_rw = connect(args.source, vectors=True)
     try:
         src_rw.execute("BEGIN IMMEDIATE")
         src_rw.execute("ROLLBACK")
@@ -226,7 +290,7 @@ def main():
             "first.".format(e))
         return 3
 
-    conn = connect(args.dest)
+    conn = connect(args.dest, vectors=True)
     conn.execute("ATTACH DATABASE ? AS src", (args.source,))
 
     log("")
@@ -235,6 +299,7 @@ def main():
     copied = {}
     for name in move:
         copied[name] = copy_table(conn, name, src_objs, log)
+    vec_src, vec_dst = copy_vectors(conn, src_objs, log)
     for v in views:
         conn.execute('DROP VIEW IF EXISTS main."{}"'.format(v["name"]))
         conn.execute(v["sql"])
@@ -251,6 +316,12 @@ def main():
         if sn != dn or sh != dh:
             bad.append((name, sn, dn, sh, dh))
             log("  MISMATCH {:<34} src={} dst={}".format(name, sn, dn))
+    if vec_src != vec_dst:
+        bad.append((VEC_TABLE, vec_src, vec_dst, "", ""))
+        log("  MISMATCH {:<34} src={} dst={}".format(
+            VEC_TABLE, vec_src, vec_dst))
+    elif vec_dst and not verify_vectors(conn, log):
+        bad.append((VEC_TABLE, vec_src, vec_dst, "knn", "differs"))
     if bad:
         log("")
         log("ABORT: {} table(s) did not verify. NOTHING was dropped; the "
@@ -271,6 +342,11 @@ def main():
             src_rw.execute('DROP TABLE IF EXISTS "{}"'.format(name))
         for v in views:
             src_rw.execute('DROP VIEW IF EXISTS "{}"'.format(v["name"]))
+        if vec_dst:
+            # Only the virtual table is named. Dropping it makes the
+            # extension clean up its own shadow tables; deleting those
+            # by hand would corrupt the index.
+            src_rw.execute('DROP TABLE IF EXISTS "{}"'.format(VEC_TABLE))
         src_rw.execute("COMMIT")
     except Exception:
         src_rw.execute("ROLLBACK")
