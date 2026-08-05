@@ -265,42 +265,44 @@ def copy_table(conn, name, src_objs, log):
 
 
 def code_still_owns_source(log):
-    """Look for the two code paths that would undo this migration.
+    """Has the code stopped treating the source as its own database?
 
-    Neither is subtle once you know to look, and both are silent when
-    they fire, so the check is cheap insurance rather than cleverness.
-    Returns a list of human-readable reasons; empty means clear.
+    The signal is OVERSEER_DB_PATH. M3 deletes that config and all its
+    plumbing, so the name goes from present to absent exactly when the
+    precondition is met. A check that cannot flip is worse than none: it
+    fires forever, and the override becomes something people type by
+    reflex.
+
+    Deliberately NOT checking for the schema-creation calls themselves.
+    Those survive M3 unchanged, just pointed at the corpus, so they would
+    keep tripping a naive check long after the danger has passed.
 
     This reads the tree the script is sitting in. If the running image
-    differs from this checkout the check is meaningless, which is why
-    --code-is-migrated exists as an override rather than the check being
-    the only gate.
+    differs from this checkout the check means nothing, which is why
+    --code-is-migrated exists rather than the check being the only gate.
+    Returns human-readable reasons; empty means clear.
     """
     reasons = []
-    here = Path(__file__).resolve().parent.parent      # core/
-    runtime = here / "src" / "plugins_runtime.py"
-    ov = here / "plugins" / "overseer" / "overseer_db.py"
-    try:
-        if runtime.is_file():
-            txt = runtime.read_text(encoding="utf-8", errors="replace")
-            if 'f"{manifest.name}.db"' in txt and "CortexDB(" in txt:
-                reasons.append(
-                    "plugins_runtime.py still builds a per-plugin database "
-                    "path from the plugin NAME and opens it, which recreates "
-                    "the source file on every boot no matter what the config "
-                    "says.")
-        if ov.is_file():
-            txt = ov.read_text(encoding="utf-8", errors="replace")
-            if "OVERSEER_SCHEMA_SQL" in txt and "executescript" in txt:
-                reasons.append(
-                    "OverseerDB still runs its full CREATE TABLE IF NOT "
-                    "EXISTS schema against whatever file it opens. On a "
-                    "recreated source that means empty tables in `main`, and "
-                    "SQLite resolves `main` before attached schemas, so every "
-                    "unqualified read would find the empty copy instead of "
-                    "the migrated data.")
-    except OSError:
-        pass
+    root = Path(__file__).resolve().parent.parent.parent   # repo root
+    hits = []
+    for sub in ("core", "gateway"):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for py in base.rglob("*.py"):
+            if "__pycache__" in py.parts or py.name == Path(__file__).name:
+                continue
+            try:
+                if "OVERSEER_DB_PATH" in py.read_text(
+                        encoding="utf-8", errors="replace"):
+                    hits.append(str(py.relative_to(root)))
+            except OSError:
+                continue
+    if hits:
+        reasons.append(
+            "the separate-database plumbing is still here. "
+            "OVERSEER_DB_PATH appears in: " + ", ".join(sorted(hits)[:8])
+            + ("" if len(hits) <= 8 else " (+{} more)".format(len(hits) - 8)))
     return reasons
 
 
