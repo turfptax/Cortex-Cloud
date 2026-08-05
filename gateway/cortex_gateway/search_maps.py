@@ -25,10 +25,10 @@ SEARCH_TARGETS: dict[str, tuple[str, list[str], str, str]] = {
     "blindspot":  ("known_blindspots",      ["body", "rationale"],  "b",   "blindspot"),
     "human":      ("human_journal_entries", ["text"],               "hj",  "human_journal_entry"),
     # The owner's own notes (cortex.db). Every other target here is something
-    # an AI wrote; this one and "human" are the two the owner authored, and
-    # this one was missing entirely until 2026-08-04, which made ~2,200 of the
-    # highest-value rows in the corpus unreachable by any connector tool
-    # including the one that writes them.
+    # an AI wrote; this one and "human" are the two the owner authored. It was
+    # missing entirely until 2026-08-04, which left the highest-value rows in
+    # the corpus unreachable by any connector tool, including the one that
+    # writes them.
     "user_note":  ("notes",                 ["content"],            "un",  "user_note"),
 }
 

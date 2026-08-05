@@ -217,6 +217,8 @@ def main():
           db6.gists[0]["period_label"].startswith("mobile-notes:"),
           str(db6.gists[0]["period_label"]))
 
+    backfill_checks()
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")
@@ -224,6 +226,46 @@ def main():
     print("all notes-digest checks passed")
     return 0
 
+
+
+
+def backfill_checks():
+    """The backfill digests old days without disturbing the forward step."""
+    import tempfile as _tf
+    tmp = Path(_tf.mkdtemp())
+    print("\nscenario: backfill targets one old day and leaves the mark alone")
+    core = FakeCore(tmp / "bf.db")
+    core.add("february thought", source="ble", day="2026-02-25")
+    core.add("march thought", source="ble", day="2026-03-10")
+    core.add("recent", source="ble", day=_days_ago(1))
+    db, llm = FakeDB(), FakeLLM()
+    db.set_overseer_state(mobile_digest.STATE_KEY, _days_ago(3))
+    before = db.get_overseer_state(mobile_digest.STATE_KEY)
+
+    out = mobile_digest.run_notes_digest(
+        core=core, db=db, llm=llm, cfg={}, _only_day="2026-02-25")
+
+    check("backfill digested exactly the requested day",
+          out["days_digested"] == 1, str(out))
+    check("it used the old day's content",
+          "february thought" in llm.last_prompt)
+    check("the forward high-water mark did NOT move",
+          db.get_overseer_state(mobile_digest.STATE_KEY) == before,
+          "{!r} -> {!r}".format(before,
+                                db.get_overseer_state(mobile_digest.STATE_KEY)))
+    check("gist is labelled for the historical day",
+          db.gists[0]["period_label"] == "user-notes:2026-02-25",
+          str(db.gists[0]["period_label"]))
+
+    print("\nscenario: routing can be skipped for old days")
+    core2 = FakeCore(tmp / "bf2.db")
+    core2.add("old", source="ble", day="2026-02-26")
+    db2, llm2 = FakeDB(), FakeLLM()
+    out2 = mobile_digest.run_notes_digest(
+        core=core2, db=db2, llm=llm2, cfg={}, _only_day="2026-02-26",
+        _route_questions=False)
+    check("gist still written with routing off",
+          out2["days_digested"] == 1 and len(db2.gists) == 1, str(out2))
 
 if __name__ == "__main__":
     raise SystemExit(main())
