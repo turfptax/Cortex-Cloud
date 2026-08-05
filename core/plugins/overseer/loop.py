@@ -1313,10 +1313,16 @@ class OverseerLoop:
                     summary.setdefault("skipped_due_to_budget", []).append(day)
                     break
                 try:
+                    # A literal dict, NOT dict(self._cfg, ...). PluginConfig
+                    # is a read-only view with .get and __contains__ and no
+                    # keys(), so copying it that way raises "not iterable"
+                    # for every day and digests nothing. The exclusion list
+                    # is the only setting this path needs: the day is fixed
+                    # by _only_day, so the max-days and seed-window settings
+                    # have nothing to act on.
                     res = _md.run_notes_digest(
                         core=self._core, db=self._db, llm=self._llm,
-                        cfg=dict(self._cfg,
-                                 loop_notes_digest_exclude_sources=excluded),
+                        cfg={"loop_notes_digest_exclude_sources": excluded},
                         budget=budget, log=self._log,
                         _only_day=day, _route_questions=route_questions)
                     summary["days_digested"] += res.get("days_digested", 0)
