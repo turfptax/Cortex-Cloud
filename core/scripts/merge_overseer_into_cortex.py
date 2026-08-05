@@ -42,6 +42,39 @@ timestamp against the CONTAINER's timezone instead of preserving what is
 stored. Rows with a NULL local_* stay NULL, which is honest; the app's
 own localizer fills them later on its own terms.
 
+PRECONDITIONS: THE CODE CHANGE COMES FIRST
+------------------------------------------
+Moving the data before changing the code produces a silent, total
+failure, so this script refuses to do it.
+
+Two paths conspire. The plugin loader builds each plugin's database path
+from the plugin NAME (`plugins_runtime.py`, `f"{manifest.name}.db"`) and
+opens it in _build_api, which runs BEFORE the plugin's on_load ever reads
+its config. So the source file is recreated on every boot whether or not
+it was deleted and whether or not its env var is set. Then OverseerDB's
+constructor runs its whole schema, 80-odd CREATE TABLE IF NOT EXISTS,
+against that fresh file.
+
+The result is a full set of EMPTY tables in `main`, and SQLite resolves
+`main` before attached schemas. Every unqualified read in the plugin,
+the loop and chat would find the empty copy and never see the migrated
+rows. No exception, no log line, no failing request: the corpus simply
+reads as wiped, which is the exact failure this script's own three-phase
+design exists to prevent.
+
+Before running with --apply:
+  1. OverseerDB must take the corpus connection instead of opening its
+     own file.
+  2. The plugin loader must not manufacture a database for this plugin.
+  3. The sync plugin's overseer-tagged routes must point at the corpus
+     (four PUSH kinds plus the bell, vector and voice-import reads),
+     or the phone's writes land in a dead file and still report success.
+  4. The gateway's read-only ATTACH and its _ATTACH_SCHEMAS tuple must be
+     changed together; changing one without the other breaks table
+     lookup rather than failing loudly.
+  5. The scheduled tick job is a SEPARATE Azure resource. Scaling the
+     app down does not stop it, and it writes.
+
 Usage:
   python merge_overseer_into_cortex.py --source o.db --dest c.db
   python merge_overseer_into_cortex.py --source o.db --dest c.db --apply
@@ -54,6 +87,7 @@ import hashlib
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
 # Litestream's own per-database bookkeeping. Each database needs its own.
 KEEP = ("_litestream_lock", "_litestream_seq")
@@ -230,12 +264,55 @@ def copy_table(conn, name, src_objs, log):
     return n
 
 
+def code_still_owns_source(log):
+    """Look for the two code paths that would undo this migration.
+
+    Neither is subtle once you know to look, and both are silent when
+    they fire, so the check is cheap insurance rather than cleverness.
+    Returns a list of human-readable reasons; empty means clear.
+
+    This reads the tree the script is sitting in. If the running image
+    differs from this checkout the check is meaningless, which is why
+    --code-is-migrated exists as an override rather than the check being
+    the only gate.
+    """
+    reasons = []
+    here = Path(__file__).resolve().parent.parent      # core/
+    runtime = here / "src" / "plugins_runtime.py"
+    ov = here / "plugins" / "overseer" / "overseer_db.py"
+    try:
+        if runtime.is_file():
+            txt = runtime.read_text(encoding="utf-8", errors="replace")
+            if 'f"{manifest.name}.db"' in txt and "CortexDB(" in txt:
+                reasons.append(
+                    "plugins_runtime.py still builds a per-plugin database "
+                    "path from the plugin NAME and opens it, which recreates "
+                    "the source file on every boot no matter what the config "
+                    "says.")
+        if ov.is_file():
+            txt = ov.read_text(encoding="utf-8", errors="replace")
+            if "OVERSEER_SCHEMA_SQL" in txt and "executescript" in txt:
+                reasons.append(
+                    "OverseerDB still runs its full CREATE TABLE IF NOT "
+                    "EXISTS schema against whatever file it opens. On a "
+                    "recreated source that means empty tables in `main`, and "
+                    "SQLite resolves `main` before attached schemas, so every "
+                    "unqualified read would find the empty copy instead of "
+                    "the migrated data.")
+    except OSError:
+        pass
+    return reasons
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="overseer database")
     ap.add_argument("--dest", required=True, help="corpus database")
     ap.add_argument("--apply", action="store_true",
                     help="actually write; without this it is a dry run")
+    ap.add_argument("--code-is-migrated", action="store_true",
+                    help="acknowledge that the app no longer opens the "
+                         "source as its own database (see PRECONDITIONS)")
     args = ap.parse_args()
 
     def log(msg):
@@ -272,6 +349,24 @@ def main():
         log("")
         log("dry run. nothing written. re-run with --apply to execute.")
         return 0
+
+    stale = code_still_owns_source(log)
+    if stale and not args.code_is_migrated:
+        log("")
+        log("ABORT: the code in this tree still opens the source as its own")
+        log("database. Moving the data now would look like it worked and")
+        log("would then be undone by the next boot. See PRECONDITIONS at the")
+        log("top of this file.")
+        for line in stale:
+            log("    " + line)
+        log("")
+        log("If you have genuinely done the code change and this check is")
+        log("wrong, re-run with --code-is-migrated.")
+        return 5
+    if stale:
+        log("")
+        log("WARNING: the precondition check still sees the old code, and")
+        log("--code-is-migrated was passed. Proceeding on your word.")
 
     # A writer still holding the source would make the copy a snapshot of
     # a moving target. BEGIN IMMEDIATE proves exclusivity instead of
