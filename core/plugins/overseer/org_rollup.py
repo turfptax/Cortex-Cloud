@@ -34,16 +34,6 @@ DEFAULT_MAX_COST_USD = 0.05
 DEFAULT_MIN_HOURS_BETWEEN = 24
 
 
-def _utc_now() -> str:
-    """UTC in SQLite's own `datetime('now')` shape.
-
-    The local_* mirror is filled by the table's AFTER INSERT/UPDATE
-    triggers, so writing UTC here satisfies the store-UTC-render-local
-    rule without the caller doing timezone work.
-    """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
 ORG_NARRATIVE_PROMPT = """\
 You are Cortex writing the organization-level rollup for ONE of the \
 owner's organizations. The owner is direct and intellectually \
@@ -81,6 +71,13 @@ inputs carry them; they are authorship attribution.
 
 
 def _utc_iso() -> str:
+    """UTC in SQLite's own `datetime('now')` shape, so values written
+    from Python compare against values written by a column DEFAULT.
+
+    The local_* mirrors are filled by each table's AFTER INSERT/UPDATE
+    triggers, so writing UTC here satisfies the store-UTC-render-local
+    rule without the caller doing timezone work.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -208,7 +205,7 @@ def run_org_rollup(*, core, db, llm, cfg, budget, summary: dict,
         # else. Found 2026-08-05: the tick counter reported every row
         # written while the column had not moved in a week.
         data = {"org_tag": tag, "narrative_stale": stale,
-                "stats_updated_at": _utc_now(), **stats}
+                "stats_updated_at": _utc_iso(), **stats}
         out = upsert("org_summaries", data)
         if out.get("ok"):
             stats_written += 1
