@@ -34,6 +34,16 @@ DEFAULT_MAX_COST_USD = 0.05
 DEFAULT_MIN_HOURS_BETWEEN = 24
 
 
+def _utc_now() -> str:
+    """UTC in SQLite's own `datetime('now')` shape.
+
+    The local_* mirror is filled by the table's AFTER INSERT/UPDATE
+    triggers, so writing UTC here satisfies the store-UTC-render-local
+    rule without the caller doing timezone work.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 ORG_NARRATIVE_PROMPT = """\
 You are Cortex writing the organization-level rollup for ONE of the \
 owner's organizations. The owner is direct and intellectually \
@@ -189,7 +199,16 @@ def run_org_rollup(*, core, db, llm, cfg, budget, summary: dict,
                 if not stale:
                     newly_stale += 1
                 stale = 1
-        data = {"org_tag": tag, "narrative_stale": stale, **stats}
+        # stats_updated_at has to be written EXPLICITLY. upsert_row does a
+        # partial UPDATE of exactly the supplied columns, and the column's
+        # `DEFAULT (datetime('now'))` only fires on INSERT. Leaving it out
+        # meant every org row kept its creation timestamp forever while its
+        # numbers were rewritten every tick, so the one column that answers
+        # "are these stats fresh?" reported the backfill date and nothing
+        # else. Found 2026-08-05: the tick counter reported every row
+        # written while the column had not moved in a week.
+        data = {"org_tag": tag, "narrative_stale": stale,
+                "stats_updated_at": _utc_now(), **stats}
         out = upsert("org_summaries", data)
         if out.get("ok"):
             stats_written += 1
