@@ -305,9 +305,10 @@ loop_rollups_max_per_tick = 5           # cheap (Sonnet) but still bound
 # every note an AI agent wrote on the owner's behalf.
 #
 # The filter is a DENYLIST so a new capture route is gleaned by default. Bulk
-# archives are excluded because they are imports, not captures: the twitter
-# archive alone is ~1,500 notes over hundreds of past days. They stay
-# searchable; digesting them is a separate owner-approved backfill.
+# archives are excluded because they are imports, not captures: a single
+# social-media archive can carry thousands of rows across hundreds of past
+# days, which would cost far more in per-day digests than it returns. They
+# stay searchable; digesting them is a separate owner-approved backfill.
 loop_notes_digest_enabled = true
 loop_notes_digest_exclude_sources = ["twitter", "google-takeout", "tory_life.db"]
 loop_notes_digest_seed_days = 7         # how far back the FIRST run reaches
@@ -323,12 +324,12 @@ chat_context_recent_notes = 8           # 0 disables the chat section
 # Composes with loop_max_*_per_tick. Manual /backfill bypasses this.
 # At default $1.00/day = ~20 Opus summaries OR ~250 Sonnet calls.
 # Slice 9.2 raise (2026-05-12): bumped calls 100→250 + cost $2→$5 so the
-# overseer can drain its ingest backlog (1,242 unprocessed sessions after
-# the Slice 9.1 grok-com + grok-twitter + tweet imports). The earlier
-# "Slice 8 night-work runway" 100/$2 was a self-imposed safety rail per
-# Tory; not an Anthropic tier limit. With auto-tag-notes eating ~94 calls
-# from the 1,546 imported tweets and the gist queue starving as a result,
-# 250/day puts gist work back inside the daily budget. Dollar cap raised
+# overseer can drain a large ingest backlog left by a bulk archive
+# import. The earlier "Slice 8 night-work runway" 100/$2 was a
+# self-imposed safety rail, not an Anthropic tier limit. Auto-tag-notes
+# was eating a big share of the daily calls on those imported rows and
+# starving the gist queue, so 250/day puts gist work back inside the
+# daily budget. Dollar cap raised
 # proportionally so calls stay the single binding control surface (today's
 # call mix would have hit $2 at ~175 calls otherwise).
 # Slice 14.5 (2026-05-22): pulled cost $5 → $3 in lockstep with
