@@ -257,6 +257,36 @@ def backfill_checks():
           db.gists[0]["period_label"] == "user-notes:2026-02-25",
           str(db.gists[0]["period_label"]))
 
+    print("\nscenario: a PluginConfig is an acceptable cfg")
+    # The backfill route used to hand this step `dict(self._cfg, ...)`.
+    # PluginConfig is a read-only view with .get and __contains__ and no
+    # keys(), so that raised "not iterable" once per day and digested
+    # nothing while still reporting ok. The live run failed on all 25 days
+    # it attempted. Pin the contract: this step reads cfg through .get
+    # only, so anything with .get is a valid cfg.
+    class OnlyGet:
+        def __init__(self, data):
+            self._d = dict(data)
+
+        def get(self, k, default=None):
+            return self._d.get(k, default)
+
+        def __contains__(self, k):
+            return k in self._d
+
+    core3 = FakeCore(tmp / "bf3.db")
+    core3.add("old", source="ble", day="2026-02-27")
+    core3.add("an archive row", source="twitter", day="2026-02-27")
+    db3, llm3 = FakeDB(), FakeLLM()
+    out3 = mobile_digest.run_notes_digest(
+        core=core3, db=db3, llm=llm3,
+        cfg=OnlyGet({"loop_notes_digest_exclude_sources": ("twitter",)}),
+        _only_day="2026-02-27", _route_questions=False)
+    check("digested with a get-only cfg", out3["days_digested"] == 1,
+          str(out3))
+    check("the exclusion from that cfg was honoured",
+          "an archive row" not in llm3.last_prompt)
+
     print("\nscenario: routing can be skipped for old days")
     core2 = FakeCore(tmp / "bf2.db")
     core2.add("old", source="ble", day="2026-02-26")
