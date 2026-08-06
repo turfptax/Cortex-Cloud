@@ -142,7 +142,13 @@ properties:
           - name: LITESTREAM_AZURE_ACCOUNT_KEY
             secretRef: ls-key
     scale:
-      minReplicas: 0
+      # Kept at 1 deliberately. Scale-to-zero cost a 39 second cold start
+      # on the first request after an idle period, and every wake started
+      # a new Litestream generation, so the replication history churned
+      # for no reason. The live app was moved to 1 on 2026-08-04 and this
+      # file was not updated with it, which left a deploy from this
+      # template able to quietly undo the change.
+      minReplicas: 1
       maxReplicas: 1
     volumes:
       - name: data
