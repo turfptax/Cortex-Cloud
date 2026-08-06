@@ -673,20 +673,27 @@ class OverseerPlugin(Plugin):
         # Step 1: open OverseerDB FIRST so the overseer schema exists on
         # the plugin's DB before anything else touches it. Same pattern
         # as the pet plugin (proven by 2c2d).
-        # Cloud migration P0 (2026-07-20): OVERSEER_DB_PATH env overrides
-        # the in-tree default so the cloud container can point at its
-        # volume. Unset = plugins/overseer/data/overseer.db, unchanged.
-        _env_db = os.environ.get("OVERSEER_DB_PATH", "").strip()
-        overseer_db_path = Path(_env_db) if _env_db \
-            else self.api.plugin_data / "overseer.db"
+        # ONE corpus database. The overseer's analytical tables and the
+        # owner's data live in the same file, so this opens cortex.db
+        # rather than a private overseer.db.
+        #
+        # It used to open its own file and ATTACH cortex.db read-write as
+        # `userdb`. That split cost more than it ever protected: a query
+        # that looked correct could silently resolve against the wrong
+        # database, which is how the owner's notes stayed invisible to
+        # every retrieval tool for months.
+        #
+        # The runtime hands us a database it built from the plugin's
+        # NAME; close it before replacing it or the handle leaks.
         if self.api.db is not None:
             try:
                 self.api.db.close()
             except Exception:
                 pass
-        self.overseer_db = OverseerDB(str(overseer_db_path))
+        self.overseer_db = OverseerDB(str(self.api.core_db_path))
         self.api.db = self.overseer_db
-        self.api.log.info("overseer.db opened (schema + helpers ready)")
+        self.api.log.info("corpus opened at %s (overseer schema + helpers "
+                          "ready)", self.api.core_db_path)
 
         # Step 2: real CoreMemoryRO replaces the runtime's _NullCoreMemoryRO.
         # Read-only mode means overseer cannot write to cortex.db even if

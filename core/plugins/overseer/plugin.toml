@@ -7,7 +7,7 @@ entrypoint = "overseer"
 enabled = true
 
 [capabilities]
-db = true                       # owns plugins/overseer/data/overseer.db (drop-and-rebuild safe)
+db = false                      # brings its own handle: opens the shared corpus, wants none built for it
 display_screens = false         # background-only; no display surface
 mcp_tools = true                # extends cortex_get_context with working_memory (slice 3d)
 http_routes = true              # /plugins/overseer/* for Hub queries (later slice)
