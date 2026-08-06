@@ -1281,7 +1281,7 @@ def _norm_confidence(value):
 class OverseerDB(CortexDB):
     """CortexDB plus the overseer schema and helpers.
 
-    Plugin loads OverseerDB(overseer_db_path) and replaces self.api.db
+    Plugin loads OverseerDB(corpus_db_path) and replaces self.api.db
     with it during on_load(). All overseer runtime code (LLMRouter,
     ingest, future consolidation loop) calls helpers through this.
     """

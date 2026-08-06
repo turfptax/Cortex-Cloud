@@ -26,7 +26,6 @@
 #               reconnecting clients. Never worth an outage: warn, continue,
 #               and let the app recreate it.
 set -u
-mkdir -p /data/plugins/overseer
 
 restore_or_die() {
   db="$1"
@@ -54,7 +53,6 @@ restore_or_warn() {
 }
 
 restore_or_die  /data/cortex.db
-restore_or_die  /data/plugins/overseer/overseer.db
 restore_or_warn /data/gateway.db
 
 echo "litestream restore phase complete"

@@ -9,8 +9,6 @@ Env vars:
   CORTEX_DB_PATH     Path to cortex.db (relational spine). Default:
                      <CORTEX_CORE_PATH>/data/cortex.db, falling back to the
                      repo's db/cortex_fresh.db for local dev.
-  OVERSEER_DB_PATH   Path to overseer.db (interpretive layer). Default:
-                     <CORTEX_CORE_PATH>/plugins/overseer/data/overseer.db.
   GATEWAY_HOST       Bind host. Default 127.0.0.1 (Cloudflare Tunnel fronts it).
   GATEWAY_PORT       Bind port. Default 8430.
 """
@@ -38,11 +36,6 @@ class Settings:
             self.cortex_db_path = canonical if canonical.exists() else (
                 _WORKSPACE / "db" / "cortex_fresh.db"
             )
-
-        odb = os.environ.get("OVERSEER_DB_PATH")
-        self.overseer_db_path = Path(odb) if odb else (
-            self.cortex_core_path / "plugins" / "overseer" / "data" / "overseer.db"
-        )
 
         # Canonical store as a SQLAlchemy URL. ONE database holds both the
         # relational spine and the interpretive layer (53 tables).
