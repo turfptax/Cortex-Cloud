@@ -313,7 +313,6 @@ class CortexDB:
         self._migrate_opt55_task_prompt()
         self._migrate_opt8_agents()
         self._conn.commit()
-        self._attach_overseer_readonly()
         # Slice 9.4.1 (2026-05-16): every timestamp column gets a
         # paired local_<col>_at (ISO with explicit offset) populated
         # by trigger. Backstops the durable rule that every displayed
@@ -336,33 +335,6 @@ class CortexDB:
         "imported_sessions", "overseer_people", "human_journal_entries",
         "temporal_narratives", "project_summaries", "summaries_gist",
     )
-
-    def _attach_overseer_readonly(self):
-        """ATTACH overseer.db as a READ-ONLY schema on the main
-        connection via a 'file:...?mode=ro' URI, so the engine itself
-        rejects writes into the attached schema (the two-ledger rule:
-        this surface never writes the AI's ledger; the overseer
-        plugin's own connection stays the single writer). NOT
-        PRAGMA query_only: empirically that froze the whole connection
-        including main, not just the schema. A missing file (fresh
-        install, no plugin yet) skips cleanly and the whitelisted
-        reads answer 'no such table'."""
-        self._overseer_attached = False
-        path = os.environ.get("OVERSEER_DB_PATH", "").strip()
-        if not path:
-            path = os.path.abspath(os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..", "plugins", "overseer", "data", "overseer.db"))
-        if not os.path.exists(path):
-            return
-        try:
-            from pathlib import Path
-            uri = Path(path).resolve().as_uri() + "?mode=ro"
-            self._conn.execute("ATTACH DATABASE ? AS overseer", (uri,))
-            self._overseer_attached = True
-        except Exception:
-            # Never let the read path break the ledger itself.
-            self._overseer_attached = False
 
     def close(self):
         if self._conn:

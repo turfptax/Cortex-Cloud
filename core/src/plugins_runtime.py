@@ -146,11 +146,22 @@ class PluginRegistry:
     def _build_api(self, manifest: PluginManifest) -> PluginAPI:
         """Construct the PluginAPI bundle for a single plugin.
 
-        Creates plugins/<name>/data/<name>.db (a CortexDB instance - yes it
-        creates the full schema including non-pet tables; harmless. Slice 2c
-        will give plugins a leaner DB layer if it matters).
+        Creates plugins/<name>/data/<name>.db unless the manifest declares
+        `[capabilities] db = false`, which means the plugin brings its own
+        handle and wants none built for it.
+
+        That opt-out is not a convenience. This method runs BEFORE the
+        plugin's on_load, so whatever it builds here exists no matter what
+        the plugin later decides, and the path is derived from the plugin
+        NAME rather than from any config. A plugin that has been moved onto
+        the shared corpus would otherwise find this file recreated under it
+        on every boot, get the full schema written into it, and then serve
+        every unqualified read from those empty tables instead of the real
+        ones. Silent, and total.
         """
         from cortex_db import CortexDB
+
+        wants_db = manifest.capabilities.get("db", True)
 
         # Cloud migration P0 (2026-07-20): CORTEX_PLUGIN_DATA_DIR relocates
         # ALL plugin data dirs to <base>/<plugin-name> (cloud volume).
@@ -165,7 +176,7 @@ class PluginRegistry:
         plugin_db_path = plugin_data_dir / f"{manifest.name}.db"
 
         return PluginAPI(
-            db=CortexDB(str(plugin_db_path)),
+            db=CortexDB(str(plugin_db_path)) if wants_db else None,
             core_memory=_NullCoreMemoryRO(),
             llm=_NullLLMRouter(),
             display=_NullDisplayBus(),

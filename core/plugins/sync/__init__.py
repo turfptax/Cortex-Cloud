@@ -39,14 +39,6 @@ from plugin_api import Plugin, Route  # noqa: E402
 
 log = logging.getLogger("plugin.sync")
 
-# Cloud migration P0 (2026-07-20): OVERSEER_DB_PATH env overrides the
-# in-tree default, matching the overseer plugin's own resolution, so
-# both plugins agree on which overseer.db is live when the cloud
-# relocates it. Unset = plugins/overseer/data/overseer.db, unchanged.
-_env_overseer_db = os.environ.get("OVERSEER_DB_PATH", "").strip()
-OVERSEER_DB = Path(_env_overseer_db) if _env_overseer_db \
-    else _HERE.parent / "overseer" / "data" / "overseer.db"
-
 # kind -> (cursor prefix, pull columns). Extended 2026-06-12: the phone
 # mirrors the WHOLE interpretive layer, not just gists + narratives.
 PULL_KINDS = {
@@ -97,7 +89,7 @@ PUSH_KINDS = {
     # Device notification capture (2026-06-12): the phone's notification
     # stream as a passive dataset source. Lands in overseer.db; table is
     # created on plugin load.
-    "device_notifications": ("overseer", ["app", "title", "body",
+    "device_notifications": ("core", ["app", "title", "body",
                                           "posted_at", "created_at"]),
     # Person-notes dictated on the phone (2026-06-13): a voice note scoped
     # to a synced contact. Lands in overseer.db person_notes. The phone
@@ -116,7 +108,7 @@ PUSH_KINDS = {
     # _http_push assembles the touched chats into imported_sessions (.jsonl
     # in the overseer's imports dir, source='mobile-voice') so the loop
     # gists them like any AI session.
-    "voice_chat_turns": ("overseer", ["chat_id", "chat_title", "role",
+    "voice_chat_turns": ("core", ["chat_id", "chat_title", "role",
                                       "content", "model", "created_at"]),
     # Work-log entries (2026-07-02): the phone voice assistant's log_time
     # tool. Lands in the core time_entries table (columns match 1:1).
@@ -129,7 +121,7 @@ PUSH_KINDS = {
     # list_pending_notification_responses tool. A post-accept hook in
     # _http_push archives/dismisses the notification, mirroring the
     # Hub's also_archive default.
-    "notification_responses": ("overseer", ["notification_id",
+    "notification_responses": ("core", ["notification_id",
                                             "action_kind", "action_label",
                                             "response_payload_json",
                                             "taken_at"]),
@@ -137,7 +129,7 @@ PUSH_KINDS = {
     # notes on AI interactions (voice chats, bell conversations). Same
     # table the Hub's /feedback route writes; note-first per Tory's
     # directive. The overseer reads it via get_recent_feedback.
-    "interaction_feedback": ("overseer", ["target_kind", "target_id",
+    "interaction_feedback": ("core", ["target_kind", "target_id",
                                           "rating", "note",
                                           "context_json", "source",
                                           "created_at"]),
@@ -184,7 +176,7 @@ class SyncPlugin(Plugin):
             con.commit()
         finally:
             con.close()
-        ocon = self._connect(OVERSEER_DB)
+        ocon = self._connect(self._core_db_path())
         try:
             ocon.execute(DEVICE_NOTIFICATIONS_DDL)
             ocon.execute(VOICE_CHAT_TURNS_DDL)
@@ -194,8 +186,8 @@ class SyncPlugin(Plugin):
             ocon.commit()
         finally:
             ocon.close()
-        log.info("sync plugin loaded (core=%s, overseer=%s)",
-                 self._core_db_path(), OVERSEER_DB)
+        log.info("sync plugin loaded (corpus=%s)",
+                 self._core_db_path())
 
     # -- db plumbing --
 
@@ -216,7 +208,10 @@ class SyncPlugin(Plugin):
         return con
 
     def _target_db(self, which):
-        return self._core_db_path() if which == "core" else OVERSEER_DB
+        """One corpus, so every kind resolves to the same file.
+        The `which` tag stays because the kind tables read
+        better with it, and a second store would need it back."""
+        return self._core_db_path()
 
     # -- routes --
 
@@ -371,7 +366,8 @@ class SyncPlugin(Plugin):
         title = next((t["chat_title"] for t in turns if t["chat_title"]), "")
         models = sorted({t["model"] for t in turns if t["model"]})
 
-        imports_dir = OVERSEER_DB.parent / "imports" / "mobile-voice"
+        imports_dir = (Path(self._core_db_path()).parent
+                       / "imports" / "mobile-voice")
         imports_dir.mkdir(parents=True, exist_ok=True)
         dest = imports_dir / "{}.jsonl".format(chat_id)
         lines = []
@@ -470,19 +466,16 @@ class SyncPlugin(Plugin):
                 "next_cursor": next_cursor}
 
     def _pull_source_conn(self, table):
-        """OPT-10 Phase C: the physical moves relocate user tables into
-        cortex.db one sub-slice at a time. Serve each pull kind from
-        wherever its table lives today: the core ledger first, falling
-        back to overseer.db for not-yet-moved tables and self-host
-        cores that never ran the movers. `table` is always a
+        """Every pull kind is served from the one corpus.
+
+        This used to probe cortex.db and fall back to overseer.db,
+        because OPT-10 relocated the user tables one sub-slice at a time
+        and a table could legitimately be in either file. There is one
+        file now, so the probe has nothing to choose between and a
+        missing table should surface as the error it is rather than be
+        retried against the same database. `table` is always a
         whitelisted kind name, never caller input."""
-        con = self._connect(self._core_db_path())
-        try:
-            con.execute("SELECT 1 FROM {} LIMIT 1".format(table))
-            return con
-        except Exception:
-            con.close()
-            return self._connect(OVERSEER_DB)
+        return self._connect(self._core_db_path())
 
     @staticmethod
     def _cursor_id(payload, prefix):
@@ -515,7 +508,7 @@ class SyncPlugin(Plugin):
         """
         last_id = self._cursor_id(payload, "gn")
         limit = self._limit(payload)
-        con = self._connect(OVERSEER_DB)
+        con = self._connect(self._core_db_path())
         try:
             core_path = self._core_db_path()
             if core_path and os.path.exists(str(core_path)):
@@ -544,7 +537,7 @@ class SyncPlugin(Plugin):
         import base64
         last_id = self._cursor_id(payload, "gv")
         limit = self._limit(payload, default=50, cap=50)
-        con = self._connect(OVERSEER_DB)
+        con = self._connect(self._core_db_path())
         try:
             try:
                 import sqlite_vec
@@ -629,7 +622,7 @@ class SyncPlugin(Plugin):
         mission_proposal info flood stays off the phone by design. Pi-only
         posture: bodies can quote corpus content verbatim."""
         limit = self._limit(payload, default=25, cap=50)
-        con = self._connect(OVERSEER_DB)
+        con = self._connect(self._core_db_path())
         try:
             raw = con.execute(
                 "SELECT id, severity, title, body, rule_name, "

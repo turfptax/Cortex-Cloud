@@ -1,4 +1,7 @@
-# Litestream replication config for the three solo-cloud SQLite files.
+# Litestream replication config for the two solo-cloud SQLite files.
+# The corpus and the credential store. The overseer used to have a
+# third; its tables live in the corpus now and replicating the empty
+# file would only give the restore something to fail on.
 # Azure Blob credentials come from env:
 #   LITESTREAM_AZURE_ACCOUNT_KEY   (ACA secret)
 #   LITESTREAM_ACCOUNT             storage account name
@@ -10,12 +13,6 @@ dbs:
         account-name: ${LITESTREAM_ACCOUNT}
         bucket: ${LITESTREAM_CONTAINER}
         path: cortex.db
-  - path: /data/plugins/overseer/overseer.db
-    replicas:
-      - type: abs
-        account-name: ${LITESTREAM_ACCOUNT}
-        bucket: ${LITESTREAM_CONTAINER}
-        path: overseer.db
   - path: /data/gateway.db
     replicas:
       - type: abs

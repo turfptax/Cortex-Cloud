@@ -4,7 +4,7 @@
 # this with `az containerapp create --yaml`. It describes ONE app running
 # four containers off a single image, sharing an ephemeral /data volume:
 #
-#   init  restore - Litestream restores the SQLite DBs from Blob on cold
+#   init  restore - Litestream restores the two SQLite DBs from Blob on cold
 #                      start (restore-before-writer is the data-safety rule)
 #   core - the memory engine + loop, sole writer of the corpus
 #   gateway - public ingress: /api + SPA + OAuth + MCP (port 8430)
@@ -61,8 +61,6 @@ properties:
             value: /data/cortex.db
           - name: CORTEX_PLUGIN_DATA_DIR
             value: /data/plugins
-          - name: OVERSEER_DB_PATH
-            value: /data/plugins/overseer/overseer.db
           - name: GATEWAY_DB_PATH
             value: /data/gateway.db
           - name: CORTEX_SERVICE_TOKEN
@@ -100,8 +98,6 @@ properties:
             value: /app/core
           - name: CORTEX_DB_PATH
             value: /data/cortex.db
-          - name: OVERSEER_DB_PATH
-            value: /data/plugins/overseer/overseer.db
           - name: CORTEX_CORE_URL
             value: http://localhost:8420
           - name: CORTEX_SERVICE_TOKEN

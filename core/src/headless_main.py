@@ -15,7 +15,6 @@ main.py stays the entry point and is unchanged by this file.
 Environment (all optional; unset values fall back to the Pi defaults
 baked into config.py):
   CORTEX_DB_PATH          absolute path to cortex.db
-  OVERSEER_DB_PATH        absolute path to overseer.db
   CORTEX_PLUGIN_DATA_DIR  base dir for plugin data (per-plugin subdirs)
   CORTEX_SERVICE_TOKEN    HTTP Basic password (username stays "cortex")
   CORTEX_HTTP_PORT        HTTP port (default 8420)

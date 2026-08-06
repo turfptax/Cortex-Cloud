@@ -20,9 +20,13 @@ Extends CortexDB with the overseer schema:
 Every interpretive row carries `confidence` (high|med|low) - core data,
 not styling. Locked design 2026-05-02; see overseer_design.md.
 
-overseer.db is drop-and-rebuild safe: cortex.db is the source of truth,
-overseer.db is an opinion about it. Deleting it and rebuilding from
-cortex.db + the bundled Session 0 seed is supported.
+These tables live in the corpus database alongside the owner's own data.
+There is no separate overseer.db any more, and nothing here is safe to
+drop and rebuild: this file used to say the opposite, and that sentence
+read as a safety property long after it stopped being one. The
+interpretive layer is derived from the raw layer in principle, but the
+derivation costs real money and months of accumulated LLM work, and the
+gists carry judgements that no rerun reproduces.
 """
 
 import json
@@ -1277,19 +1281,10 @@ def _norm_confidence(value):
 class OverseerDB(CortexDB):
     """CortexDB plus the overseer schema and helpers.
 
-    Plugin loads OverseerDB(overseer_db_path) and replaces self.api.db
+    Plugin loads OverseerDB(corpus_db_path) and replaces self.api.db
     with it during on_load(). All overseer runtime code (LLMRouter,
     ingest, future consolidation loop) calls helpers through this.
     """
-
-    def _attach_overseer_readonly(self):
-        """No-op override. The inherited Phase B read path attaches
-        overseer.db read-only, but on THIS class main already IS
-        overseer.db: the self attach is useless and, worse, its stale
-        read-only schema hijacks unqualified name resolution after the
-        Phase C people renames (writes then fail 'readonly database').
-        The Phase B attach belongs to the real cortex.db connection."""
-        self._overseer_attached = False
 
     def __init__(self, db_path):
         super().__init__(db_path)
@@ -1361,28 +1356,22 @@ class OverseerDB(CortexDB):
         self._pull_ro_conn = None
         self._pull_has_local = False
         self._attach_gateway_db()
-        # OPT-10 Phase C sub-slice 1: the People pillar lives in
-        # cortex.db. Attach the user's ledger READ-WRITE as `userdb`
-        # (this process is the single writer of both files; WAL handles
-        # the two connections) and run the pillar's fresh-or-move. Runs
-        # LAST on purpose: post-move, unqualified people statements
-        # resolve main -> overseer(self) -> gateway -> userdb, and only
-        # userdb holds the live tables.
-        self.people_pillar_report = {"state": "unattached"}
-        self._attach_userdb_and_ensure_people()
+        # The People pillar and the other user-owned tables live in this
+        # same database now, so there is nothing to attach: create them
+        # if they are missing and otherwise do nothing. This used to
+        # ATTACH cortex.db read-write as `userdb` and run a one-time
+        # move, which is why so much of this file once had to reason
+        # about which schema a bare table name would resolve to.
+        self.people_pillar_report = {"state": "unensured"}
+        self._ensure_user_tables()
 
-    def _attach_userdb_and_ensure_people(self):
+    def _ensure_user_tables(self):
         try:
-            path = os.environ.get("CORTEX_DB_PATH", "").strip()
-            if not path:
-                from config import CORTEX_DB_PATH as _cdp
-                path = _cdp
-            self._conn.execute("ATTACH DATABASE ? AS userdb", (path,))
             import people_pillar
-            self.people_pillar_report = people_pillar.ensure(
-                self._conn, log=log.info)
+            n = people_pillar.ensure_schema(self._conn, log=log.info)
+            self.people_pillar_report = {"state": "ok", "statements": n}
         except Exception as e:
-            log.warning("people_pillar attach/ensure failed: %s", e)
+            log.warning("people_pillar schema ensure failed: %s", e)
             try:
                 self._conn.rollback()
             except Exception:

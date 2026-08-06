@@ -35,9 +35,14 @@ from .config import get_settings
 
 # Attached corpus schemas, in ATTACH (= name-resolution) order. Main
 # (gateway.db) always wins first, which is what routes the gateway's
-# pull_events writes to its OWN copy even though overseer.db has a
-# table of the same name.
-_ATTACH_SCHEMAS = ("cortex", "overseer")
+# pull_events writes to its OWN copy even though the corpus has a table
+# of the same name.
+#
+# Keep this tuple in lockstep with the ATTACH statements in
+# _wire_attach. `_schema_of` walks it and only catches LookupError, so a
+# name listed here but never attached turns a loud connect failure into
+# a silent table-lookup miss.
+_ATTACH_SCHEMAS = ("cortex",)
 
 
 @lru_cache(maxsize=1)
@@ -56,13 +61,16 @@ def engine() -> sa.Engine:
 
 
 def _wire_attach(eng: sa.Engine, s) -> None:
-    """Attach the core's two corpus DBs read-only on EVERY pooled
-    connection. mode=ro is enforced by SQLite itself: any INSERT/UPDATE/
-    DELETE that lands in an attached schema fails with 'attempt to write
-    a readonly database'. Missing files fail the connect loudly (start
-    the core first; it creates them)."""
+    """Attach the corpus read-only on EVERY pooled connection. mode=ro is
+    enforced by SQLite itself: any INSERT/UPDATE/DELETE that lands in an
+    attached schema fails with 'attempt to write a readonly database'. A
+    missing file fails the connect loudly (start the core first; it
+    creates it).
+
+    One attach, not two. The overseer's tables live in the corpus now, so
+    the second one would name a file that no longer exists and take down
+    every pooled connection with it."""
     cortex = str(s.cortex_db_path).replace("\\", "/")
-    overseer = str(s.overseer_db_path).replace("\\", "/")
 
     @sa.event.listens_for(eng, "connect")
     def _attach(dbapi_conn, _record):
@@ -75,8 +83,6 @@ def _wire_attach(eng: sa.Engine, s) -> None:
             cur.execute("PRAGMA busy_timeout=5000")
             cur.execute("PRAGMA synchronous=NORMAL")
             cur.execute(f"ATTACH DATABASE 'file:{cortex}?mode=ro' AS cortex")
-            cur.execute(
-                f"ATTACH DATABASE 'file:{overseer}?mode=ro' AS overseer")
         finally:
             cur.close()
 
