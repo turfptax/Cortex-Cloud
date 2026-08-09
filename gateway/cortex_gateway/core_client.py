@@ -47,11 +47,17 @@ class CoreClient:
         self._auth = (s.core_username, s.core_token)
 
     def request(self, method: str, path: str,
-                payload: dict[str, Any] | None = None) -> dict[str, Any]:
+                payload: dict[str, Any] | None = None,
+                read: float | None = None) -> dict[str, Any]:
+        """`read` overrides the read timeout for calls that legitimately
+        wait on an LLM (e.g. regenerating a daily narrative). The tight
+        default stays the rule: a down core must fail fast."""
         url = self._base + path
+        timeout = _TIMEOUT if read is None else httpx.Timeout(
+            connect=3.0, read=read, write=10.0, pool=3.0)
         try:
             r = httpx.request(method, url, json=payload, auth=self._auth,
-                              timeout=_TIMEOUT)
+                              timeout=timeout)
         except httpx.HTTPError as e:
             log.warning("core %s %s unreachable: %s", method, path, e)
             raise CoreWriteError(f"core unreachable: {e}") from e
@@ -70,8 +76,9 @@ class CoreClient:
                 r.status_code)
         return body if isinstance(body, dict) else {"result": body}
 
-    def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.request("POST", path, payload)
+    def post(self, path: str, payload: dict[str, Any],
+             read: float | None = None) -> dict[str, Any]:
+        return self.request("POST", path, payload, read=read)
 
     def get(self, path: str) -> dict[str, Any]:
         return self.request("GET", path)
