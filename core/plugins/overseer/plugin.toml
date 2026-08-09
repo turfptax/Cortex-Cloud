@@ -170,6 +170,10 @@ working_memory_recent_patterns = 5
 working_memory_recent_drift = 5
 working_memory_recent_future_notes = 3   # newest institutional memory
 working_memory_recent_rollups = 5         # daily automation rollups
+# Reminder aging (2026-08-09): reminder notes have no closed state, so
+# older ones must age out of the "open" view or they nag forever (the
+# retired Pi-era check-in notes did exactly that for two months).
+working_memory_reminder_max_age_days = 45
 
 # ── Background consolidation loop (slice 3c) ──────────────────────
 # Per-tick, the overseer:
@@ -289,6 +293,16 @@ loop_journal_boot_read_n = 5      # how many recent entries to log on plugin loa
 # journal stays the AI's own record in overseer.db per R5.
 loop_journal_max_per_local_day = 1
 loop_journal_min_minutes_between = 90
+
+# Trigger-gated check-in (2026-08-09, Tory's decision on the
+# overseer's June ask in note 2110). The old Pi-era 90-minute timer
+# check-in is gone; the loop now writes a status check-in note ONLY
+# when owner-side data actually arrived (new notes or journal entries,
+# e.g. a phone sync) since the last one, with a minimum-hours floor.
+# Deterministic, zero LLM cost. Notes land as note_type 'checkin',
+# source 'overseer', pre-tagged so the auto-tagger skips them.
+loop_checkin_enabled = true
+loop_checkin_min_hours = 4.0
 
 # Slice 3f.5 #2: question-centered routing. Every new gist is routed
 # via Sonnet against active open_questions. Most are "unfiled" - that's

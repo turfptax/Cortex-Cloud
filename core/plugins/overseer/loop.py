@@ -725,6 +725,21 @@ class OverseerLoop:
                 self._log.exception("working memory build failed: %s", e)
                 summary["errors"].append("working_memory: " + str(e)[:200])
 
+        # Step 3b (2026-08-09, Tory's cadence decision): trigger-gated
+        # check-in. The Pi-era 90-minute check-in wrote status notes on a
+        # timer and mostly said "nothing happened"; the overseer asked to
+        # gate it on an actual trigger since June (note 2110). This step
+        # writes a check-in ONLY when owner-side data actually arrived
+        # (new notes or journal entries, e.g. a phone sync) since the
+        # last check-in, with a minimum-hours floor. Deterministic, zero
+        # LLM cost.
+        if self._cfg.get("loop_checkin_enabled", True):
+            try:
+                self._maybe_checkin(summary)
+            except Exception as e:
+                self._log.exception("checkin step failed: %s", e)
+                summary["errors"].append("checkin: " + str(e)[:200])
+
         # Step 4: notification rules (deterministic, no LLM cost).
         if self._cfg.get("loop_run_notifications", True):
             try:
@@ -1659,6 +1674,148 @@ class OverseerLoop:
             self._log.warning(
                 "tags column write-back failed for note %s: %s",
                 note_id, out.get("error"))
+
+    # ── Step 3b: trigger-gated check-in ──────────────────────────
+
+    CHECKIN_MARK_KEY = "checkin_mark"
+
+    def _checkin_data_maxes(self) -> dict:
+        """Current high-water ids of the owner-side data the check-in
+        watches: notes (excluding the check-in's own notes, so a
+        check-in can never trigger the next one) and journal entries.
+        A missing table reads as 0 so a minimal install still works."""
+        maxes = {"notes": 0, "journal": 0}
+        try:
+            rows = self._core.query(
+                "SELECT COALESCE(MAX(id), 0) AS m FROM notes "
+                "WHERE note_type != 'checkin'")
+            maxes["notes"] = int(rows[0]["m"]) if rows else 0
+        except Exception:
+            pass
+        try:
+            rows = self._core.query(
+                "SELECT COALESCE(MAX(id), 0) AS m FROM human_journal_entries")
+            maxes["journal"] = int(rows[0]["m"]) if rows else 0
+        except Exception:
+            pass
+        return maxes
+
+    def _maybe_checkin(self, summary: dict) -> None:
+        """Write a status check-in note ONLY when owner-side data moved.
+
+        Mechanics (Tory's 2026-08-09 decision, answering the overseer's
+        standing ask in note 2110):
+          - the mark (overseer_state) stores the note/journal max ids the
+            LAST check-in reported, plus when it was written
+          - first run anchors the mark and writes nothing (the anchor
+            rule: day zero must not fire a backlog check-in)
+          - no new data since the mark: silence, no note
+          - new data but the last check-in is younger than
+            loop_checkin_min_hours: wait, and do NOT advance the mark,
+            so the eventual check-in still reports everything
+          - otherwise: write one deterministic note (note_type
+            'checkin', source 'overseer', pre-tagged so the auto-tagger
+            skips it) through the core's public upsert contract, then
+            advance the mark to the maxes read BEFORE the write (our
+            own note is excluded by note_type anyway).
+        """
+        raw = self._db.get_overseer_state(self.CHECKIN_MARK_KEY)
+        current = self._checkin_data_maxes()
+        now_iso = _utc_iso()
+
+        if not raw:
+            self._db.set_overseer_state(
+                self.CHECKIN_MARK_KEY,
+                json.dumps({**current, "at": now_iso}))
+            summary["checkin"] = "anchored"
+            return
+
+        try:
+            mark = json.loads(raw)
+        except ValueError:
+            mark = {"notes": 0, "journal": 0, "at": ""}
+
+        # COUNT the arrivals inside (mark, current] rather than
+        # subtracting ids: the id gap includes rows the trigger must
+        # ignore (this step's own past check-in notes), and the upper
+        # bound keeps the count consistent with the mark we advance to
+        # even if another writer lands a row mid-tick.
+        new_notes = new_journal = 0
+        try:
+            rows = self._core.query(
+                "SELECT COUNT(*) AS c FROM notes "
+                "WHERE note_type != 'checkin' AND id > ? AND id <= ?",
+                (int(mark.get("notes") or 0), current["notes"]))
+            new_notes = int(rows[0]["c"]) if rows else 0
+        except Exception:
+            pass
+        try:
+            rows = self._core.query(
+                "SELECT COUNT(*) AS c FROM human_journal_entries "
+                "WHERE id > ? AND id <= ?",
+                (int(mark.get("journal") or 0), current["journal"]))
+            new_journal = int(rows[0]["c"]) if rows else 0
+        except Exception:
+            pass
+        if new_notes == 0 and new_journal == 0:
+            summary["checkin"] = "no-new-data"
+            return
+
+        min_hours = float(self._cfg.get("loop_checkin_min_hours", 4.0))
+        last_at = str(mark.get("at") or "")
+        if last_at:
+            try:
+                last_dt = datetime.strptime(
+                    last_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                age_h = (datetime.now(timezone.utc)
+                         - last_dt).total_seconds() / 3600.0
+                if age_h < min_hours:
+                    summary["checkin"] = "cooldown"
+                    return
+            except ValueError:
+                pass  # unparseable mark timestamp: do not block the check-in
+
+        # Deterministic status body, zero LLM cost. Shape follows the
+        # Pi-era check-ins (note 2110) minus the timer spam.
+        triggers = []
+        if new_notes:
+            triggers.append("{} new note{}".format(
+                new_notes, "" if new_notes == 1 else "s"))
+        if new_journal:
+            triggers.append("{} new journal entr{}".format(
+                new_journal, "y" if new_journal == 1 else "ies"))
+        try:
+            day = self._db.llm_call_stats(1) or []
+            calls_24h = sum(int(r.get("calls") or 0) for r in day)
+            cost_24h = sum(float(r.get("total_cost_usd") or 0) for r in day)
+        except Exception:
+            calls_24h, cost_24h = 0, 0.0
+        errors = summary.get("errors") or []
+        content = (
+            "[CHECKIN] {} UTC. Trigger: {} since the last check-in{}. "
+            "Loop alive; last 24h LLM: {} calls, ${:.2f}. "
+            "This tick's errors: {}.".format(
+                now_iso, " + ".join(triggers),
+                " ({})".format(last_at) if last_at else "",
+                calls_24h, cost_24h,
+                "; ".join(errors)[:200] if errors else "none"))
+
+        out = self._core_upsert("notes", {
+            "content": content,
+            "note_type": "checkin",
+            "tags": "overseer-check-in,auto",
+            "project": "",
+            "source": "overseer",
+        })
+        if not out.get("ok"):
+            summary["checkin"] = "write-failed: {}".format(
+                str(out.get("error"))[:120])
+            return
+        self._db.set_overseer_state(
+            self.CHECKIN_MARK_KEY,
+            json.dumps({**current, "at": now_iso}))
+        summary["checkin"] = "written"
+        summary["checkin_note_id"] = out.get("id")
 
     def _tag_one_batch(self, batch: list[dict], budget: TickBudget,
                        max_per_note: int) -> tuple[int, int]:
@@ -2923,7 +3080,16 @@ class OverseerLoop:
             "top_questions": top_questions,            # PRIMARY (3f.5)
             "top_projects": top_projects,
             "recent_decisions": self._core.recent_decisions(limit=decisions_n),
-            "open_todos": self._core.open_reminders(limit=todos_n),
+            # Reminder aging (2026-08-09): reminder-type notes have no
+            # closed state, so without a cutoff the June fossils (the
+            # retired Pi-era check-ins among them) surface as "open"
+            # forever and nag every tick. Same principle as
+            # notification_stale_archive_days: at some point the signal
+            # stops being actionable.
+            "open_todos": self._core.open_reminders(
+                limit=todos_n,
+                max_age_days=int(self._cfg.get(
+                    "working_memory_reminder_max_age_days", 45))),
             "open_questions": legacy_open_questions,    # back-compat
             "recent_themes": themes,
             "recent_episode_titles": episode_titles,

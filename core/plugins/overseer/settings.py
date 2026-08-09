@@ -116,6 +116,31 @@ SETTINGS_SCHEMA = {
         "label": "Overseer journal",
         "help": "First-person reflection after notable ticks.",
     },
+    "loop_checkin_enabled": {
+        "section": "loop",
+        "type": "bool",
+        "label": "Data-triggered check-in",
+        "help": "Status note written only when new owner data (notes, "
+                "journal, phone sync) arrived since the last one.",
+    },
+    "loop_checkin_min_hours": {
+        "section": "loop",
+        "type": "number",
+        "label": "Check-in spacing (hours)",
+        "help": "Minimum hours between check-ins even while data keeps "
+                "arriving.",
+        "min": 0.5,
+        "max": 48.0,
+    },
+    "working_memory_reminder_max_age_days": {
+        "section": "loop",
+        "type": "int",
+        "label": "Reminder max age (days)",
+        "help": "Reminder notes older than this stop surfacing as open "
+                "in working memory and chat context.",
+        "min": 1,
+        "max": 365,
+    },
     "loop_git_ingest_repos": {
         "section": "ingest",
         "type": "string_list",
