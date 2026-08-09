@@ -159,6 +159,35 @@ def patch_project(tag: str, fields: dict) -> None:
         f"WHERE tag = :tag", {**fields, "tag": tag})
 
 
+def patch_note(note_id: int, fields: dict) -> None:
+    """Partial update of one notes row by id, through the same
+    partial-aware core upsert as patch_project. The caller has already
+    checked the row exists and is editable (source guard lives in
+    corpus_service.note_update)."""
+    if routed():
+        _upsert("notes", {"id": int(note_id), **fields})
+        return
+    sets = ", ".join(f"{k} = :{k}" for k in fields)
+    db.execute(f"UPDATE notes SET {sets} WHERE id = :id",
+               {**fields, "id": int(note_id)})
+
+
+def patch_org(tag: str, fields: dict) -> None:
+    """Create-or-partial-update one organizations row by tag. The core's
+    upsert both creates and patches; the legacy single-file path seeds
+    the row first (every column has a default) so create works there
+    too."""
+    if routed():
+        _upsert("organizations", {"tag": tag, **fields})
+        return
+    db.execute("INSERT OR IGNORE INTO organizations (tag) VALUES (:tag)",
+               {"tag": tag})
+    if fields:
+        sets = ", ".join(f"{k} = :{k}" for k in fields)
+        db.execute(f"UPDATE organizations SET {sets} WHERE tag = :tag",
+                   {**fields, "tag": tag})
+
+
 # ── Interpretive tables (overseer.db) ─────────────────────────────────
 
 

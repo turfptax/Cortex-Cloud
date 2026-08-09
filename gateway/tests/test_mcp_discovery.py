@@ -71,3 +71,71 @@ def test_server_instructions_guide_tool_selection():
     from cortex_gateway import mcp_server
     instr = mcp_server.mcp.instructions
     assert instr and "search(query)" in instr and "cortex_ingest" in instr
+
+
+# ── 2026-08-08: the surface must describe itself ──────────────────────
+# Tory's standing invariant: the MCP surface is the PRIMARY product
+# surface (AIs are the main users), so its self-description must never
+# drift from the tools. These tests are the enforcement.
+
+
+def test_intro_tool_first_class():
+    t = _tools()["cortex_intro"]
+    assert t.annotations.readOnlyHint is True
+    assert t.annotations.openWorldHint is False
+    assert "FIRST" in t.description
+
+
+def test_instructions_name_every_tool():
+    """The guide can only teach tools it mentions. Adding a tool without
+    documenting it in `instructions` fails here BY DESIGN: update the
+    guide (and _write_contract if it writes) in the same change."""
+    from cortex_gateway import mcp_server
+    instr = mcp_server.mcp.instructions
+    missing = [n for n in _tools() if n not in instr]
+    assert not missing, f"tools absent from server instructions: {missing}"
+
+
+def test_intro_roster_covers_every_tool():
+    from cortex_gateway import mcp_server
+    assert {r["tool"] for r in mcp_server._tool_roster()} == set(_tools())
+
+
+def test_write_contract_names_every_write_tool():
+    import json
+    from cortex_gateway import mcp_server
+    contract = json.dumps(mcp_server._write_contract())
+    for name, t in _tools().items():
+        ann = t.annotations
+        if ann is not None and ann.readOnlyHint is True:
+            continue
+        assert name in contract, f"write tool {name} missing from _write_contract"
+
+
+def test_new_write_tools_present_and_annotated():
+    tools = _tools()
+    for name in ("cortex_org_upsert", "cortex_rule_update",
+                 "cortex_note_update"):
+        assert name in tools, name
+        assert tools[name].annotations.readOnlyHint is False, name
+    # Correcting a stored memory is the one destructive-flagged write;
+    # org/rule updates are soft status flips and partial patches.
+    assert tools["cortex_note_update"].annotations.destructiveHint is True
+    assert tools["cortex_org_upsert"].annotations.destructiveHint is False
+    assert tools["cortex_rule_update"].annotations.destructiveHint is False
+
+
+def test_build_intro_reports_write_status(monkeypatch):
+    from cortex_gateway import mcp_server
+    from cortex_gateway.auth import Principal
+    monkeypatch.setattr(mcp_server.grants, "can_write", lambda p: False)
+    p = Principal(id=1, name="visitor", kind="connector",
+                  scopes={"connector:read"}, max_tier="internal",
+                  category_filter=[])
+    out = mcp_server._build_intro(p)
+    assert out["ok"] and out["you"]["can_write"] is False
+    assert out["you"]["how_to_get_write"]
+    assert out["write_contract"]["people"]       # owner-only stays stated
+    assert any(r["tool"] == "cortex_intro" for r in out["read_tools"])
+    assert all(r["call"].startswith(r["tool"] + "(")
+               for r in out["read_tools"] + out["write_tools"])

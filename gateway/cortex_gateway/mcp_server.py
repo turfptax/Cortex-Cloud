@@ -17,6 +17,16 @@ Tool layers on the one endpoint:
 
 Auth: bearer token validated by middleware (see app.py), principal stashed in
 a contextvar that tools read for scope checks + pull-event attribution.
+
+MAINTENANCE INVARIANT (Tory, 2026-08-08): this surface is the PRIMARY
+product surface - AIs are the main users of Cortex, the web Hub is the
+owner's side window. Whenever a tool is added or changed here:
+  1. its docstring IS the tool description every connector reads; keep it
+     exact about parameters, defaults, and effects,
+  2. name it in `instructions` below (test_mcp_discovery fails otherwise),
+  3. if it writes, add it to _write_contract() (also test-enforced).
+The roster served by cortex_intro is generated from the live registry at
+call time, so it never needs manual upkeep.
 """
 from __future__ import annotations
 
@@ -76,6 +86,14 @@ mcp = FastMCP(
         "of their notes, project context, journal, open questions, patterns, and "
         f"AI-synthesized summaries. Use it to ground answers in what {_OWNER} has "
         "actually said, done, and is working on rather than guessing.\n\n"
+        "START HERE: call cortex_intro() before anything else. It returns "
+        "the live tool roster with exact parameters, whether YOUR "
+        "connection may write, the per-pillar write contract (how to add, "
+        "modify, and remove each kind of memory), the token legend, and "
+        "the gotchas that trip up new connections. cortex_intro(brief=true) "
+        "adds the owner-context brief (who they are, active projects, open "
+        "questions). When unsure about a parameter, call cortex_intro "
+        "instead of guessing.\n\n"
         "Tool guide:\n"
         "- search(query): ranked hits, each with an `id` token (e.g. g:123). "
         "Start here - it is the OpenAI-compatible entry point.\n"
@@ -106,20 +124,28 @@ mcp = FastMCP(
         "its successors, tokens n:<id>).\n\n"
         "Pillars (structured, first-class):\n"
         f"- cortex_projects_list / cortex_project_get: what {_OWNER} is working on, "
-        "with Cortex's rollup stats.\n"
+        "with Cortex's rollup stats. cortex_project_upsert creates or "
+        "partially updates one (status='archived' retires it).\n"
         "- cortex_orgs_list / cortex_org_get: the organization layer that "
         "groups projects (companies and thematic groups); org_tag on a "
-        "project names its organization.\n"
+        "project names its organization. cortex_org_upsert creates or "
+        "edits one (is_active=0 retires it).\n"
         "- cortex_tasks_list / cortex_task_add / cortex_task_update: the "
         "shared task memory under each project. Log tasks you learn about "
         "or complete so later agents see the context; this is memory, not "
-        "an execution queue.\n"
+        "an execution queue. Remove = cortex_task_update(status="
+        "'cancelled').\n"
         f"- cortex_rules_list: {_OWNER}'s standing tech rules (hard-won engineering "
-        "defaults). Read these before advising on their stack.\n"
-        "- cortex_skills_list / cortex_skill_get: their tech-skills portfolio.\n"
-        "- writes (cortex_project_upsert / cortex_rule_add / cortex_skill_log, "
-        "plus cortex_ingest) work for any approved connection: logging is a "
-        "first-class use, so read and write come together.\n\n"
+        "defaults). Read these before advising on their stack. "
+        "cortex_rule_add records a new one; cortex_rule_update refines or "
+        "retires one by title (status='retired').\n"
+        "- cortex_skills_list / cortex_skill_get: their tech-skills "
+        "portfolio; cortex_skill_log appends lessons and wins.\n"
+        "- cortex_note_update fixes a note the AI side wrote (source "
+        "'ai-generated'); the owner's own captures are read-only here.\n"
+        "- Writes work for any approved connection: logging is a "
+        "first-class use, so read and write come together. Every remove "
+        "is soft (status flips, never deletion).\n\n"
         "Reads are read-only over a closed corpus. Follow token links "
         "(next_tokens) to traverse related memories. People is intentionally "
         "not exposed over MCP."
@@ -129,6 +155,182 @@ mcp = FastMCP(
     streamable_http_path="/",
     transport_security=_transport_security(),
 )
+
+
+# ── Orientation: the run-this-first surface map ───────────────────────
+# Everything here is either generated from the live tool registry at
+# call time (the roster) or test-enforced against it (the contract), so
+# the map cannot drift from the tools. See the maintenance invariant in
+# the module docstring.
+
+_TOKEN_LEGEND = {
+    "un": "user_note - one of the owner's own notes (cortex_ingest writes here)",
+    "hj": "human - an owner journal entry",
+    "g":  "gist - per-session summary",
+    "t":  "theme - recurring theme",
+    "p":  "pattern - named pattern",
+    "q":  "question - open question",
+    "nar": "narrative - temporal narrative",
+    "j":  "journal - the OVERSEER's own reflection (AI-written)",
+    "n":  "future_note - overseer memo to its successors (AI-written)",
+}
+
+
+def _write_contract() -> dict:
+    """Per-pillar add / modify / remove map. Every write tool must be
+    named here (test-enforced); removes are soft by design."""
+    return {
+        "notes": {
+            "add": "cortex_ingest(content, kind='note', tags='', project='')",
+            "modify": "cortex_note_update(id, content?, tags?, project?) - "
+                      "AI-written notes only (source 'ai-generated')",
+            "remove": "not available yet; write a correcting note with "
+                      "cortex_ingest that references the un:<id> token",
+        },
+        "tasks": {
+            "add": "cortex_task_add(title, project, details?, priority?, "
+                   "due_date?)",
+            "modify": "cortex_task_update(id|uuid, title?, status?, "
+                      "details?, priority?, due_date?)",
+            "remove": "cortex_task_update(status='cancelled') - soft, the "
+                      "record stays",
+        },
+        "projects": {
+            "add": "cortex_project_upsert(tag, name, ...)",
+            "modify": "cortex_project_upsert - partial: only passed fields "
+                      "change",
+            "remove": "cortex_project_upsert(status='archived') - archive, "
+                      "never delete",
+        },
+        "organizations": {
+            "add": "cortex_org_upsert(tag, name?, org_type?, my_role?, "
+                   "notes?)",
+            "modify": "cortex_org_upsert - partial",
+            "remove": "cortex_org_upsert(is_active=0) - retires it from "
+                      "lists; 1 restores",
+        },
+        "rules": {
+            "add": "cortex_rule_add(title, rule, stack?, situation?)",
+            "modify": "cortex_rule_update(title, rule?, stack?, situation?, "
+                      "status?) - only supplied fields change",
+            "remove": "cortex_rule_update(title, status='retired')",
+        },
+        "skills": {
+            "add": "cortex_skill_log(skill, content, kind?, proficiency?) - "
+                   "creates the skill on first mention",
+            "modify": "cortex_skill_log with proficiency= updates the "
+                      "header; entries are append-only",
+            "remove": "entries are append-only by design",
+        },
+        "chat": "cortex_chat(message), or cortex_chat_start + poll "
+                "cortex_chat_result when your client cannot wait 45-70s",
+        "people": "owner-only; deliberately not exposed over MCP",
+    }
+
+
+def _tool_roster() -> list[dict]:
+    """The live tool list, straight from the registry: name, calling
+    shape, whether it writes, and the first line of its description.
+    Optional parameters carry a trailing '?'."""
+    roster = []
+    for t in sorted(mcp._tool_manager.list_tools(), key=lambda t: t.name):
+        schema = t.parameters if isinstance(t.parameters, dict) else {}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        params = [name if name in required else f"{name}?"
+                  for name in props]
+        ann = t.annotations
+        roster.append({
+            "tool": t.name,
+            "call": "{}({})".format(t.name, ", ".join(params)),
+            "writes": not (ann is not None and ann.readOnlyHint is True),
+            "what": (t.description or "").strip().splitlines()[0],
+        })
+    return roster
+
+
+def _build_intro(principal: Principal,
+                 owner_brief: dict | None = None) -> dict:
+    """The cortex_intro payload. Module-level so tests can exercise it
+    with a bare Principal, no MCP transport needed."""
+    writable = grants.can_write(principal)
+    roster = _tool_roster()
+    out: dict[str, Any] = {
+        "ok": True,
+        "what_this_is": (
+            f"Cortex is {_OWNER}'s persistent AI memory. You are one of "
+            "the AIs it exists for: read it to ground your answers in "
+            "what has actually happened, and write back what you learn "
+            "so the next AI starts warmer than you did."),
+        "you": {
+            "connection": principal.name,
+            "kind": principal.kind,
+            "can_write": writable,
+        },
+        "start_here": [
+            "cortex_recent(days=7) for what changed lately",
+            "cortex_search(query) to find anything; cortex_read(token) to "
+            "go deep; follow next_tokens",
+            f"cortex_rules_list() before advising on {_OWNER}'s stack",
+            "log what you learn or do: cortex_ingest for observations, "
+            "cortex_task_add / cortex_task_update under the project you "
+            "touched",
+        ],
+        "read_tools": [r for r in roster if not r["writes"]],
+        "write_tools": [r for r in roster if r["writes"]],
+        "write_contract": _write_contract(),
+        "token_legend": _TOKEN_LEGEND,
+        "gotchas": [
+            "cortex_ingest's body parameter is `content` (a `text` alias "
+            "is tolerated, but `content` is the real name).",
+            "cortex_chat takes 45-70s; if your client times out around "
+            "60s, use cortex_chat_start and poll cortex_chat_result.",
+            "days=0 in cortex_search means ALL time, not zero days.",
+            "kind `user_note`/`human` = the owner's own words; `journal`/"
+            "`future_note` = AI-written. Do not confuse them.",
+            "Write tools answer ok=false with the reason when your "
+            "connection lacks write approval; they never throw.",
+        ],
+    }
+    if not writable:
+        out["you"]["how_to_get_write"] = (
+            "the owner approves connections from the web Hub; an approved "
+            "connection reads AND writes")
+    if owner_brief is not None:
+        out["owner_brief"] = owner_brief
+    return out
+
+
+@mcp.tool(title="Start here: how to use Cortex",
+          annotations=ToolAnnotations(title="Start here: how to use Cortex",
+                                      readOnlyHint=True, idempotentHint=True,
+                                      openWorldHint=False))
+async def cortex_intro(brief: bool = False) -> dict[str, Any]:
+    """Call this FIRST when you connect. Returns the live tool roster with
+    exact calling shapes, whether YOUR connection can write, the
+    per-pillar write contract (how to add, modify, and remove every kind
+    of memory), the token legend, and the gotchas that trip up new
+    connections. Nothing here is hand-maintained: the roster is read
+    from the registry at call time.
+
+    brief=true additionally fetches the owner-context brief (who the
+    owner is, what they are working on and thinking about), so one call
+    orients you on both the surface and the person."""
+    p = _principal()
+    owner_brief = None
+    if brief:
+        s = get_settings()
+        try:
+            async with _core_client(20.0) as client:
+                r = await client.get(f"{s.core_url}/plugins/overseer/intro")
+                owner_brief = r.json() if r.status_code == 200 else {
+                    "ok": False,
+                    "error": f"brief unavailable (HTTP {r.status_code})"}
+        except Exception:
+            owner_brief = {"ok": False,
+                           "error": "brief unavailable right now; the rest "
+                                    "of this intro is complete"}
+    return _build_intro(p, owner_brief)
 
 
 # ── Universal reader pair (OpenAI-compatible) ─────────────────────────
@@ -246,19 +448,48 @@ def cortex_recent(days: int = 7, limit: int = 40) -> dict[str, Any]:
           annotations=ToolAnnotations(title="Ingest into Cortex",
                                       readOnlyHint=False, destructiveHint=False,
                                       idempotentHint=False, openWorldHint=False))
-def cortex_ingest(content: str, kind: str = "note", tags: str = "",
-                  project: str = "") -> dict[str, Any]:
+def cortex_ingest(content: str = "", kind: str = "note", tags: str = "",
+                  project: str = "", text: str = "") -> dict[str, Any]:
     """Write an observation into the owner's notes. Additive (never deletes or
     overwrites). Available to any approved connection.
 
+    The body goes in `content` (required; `text` is tolerated as an alias
+    for clients that guess, but `content` is the real parameter). `tags`
+    is a comma-separated list; `project` is a project tag.
+
     What you write is immediately findable: cortex_search(kinds="user_note")
     and cortex_read("un:<id>") return it, and it shows up in cortex_recent.
-    The response carries the new note id."""
+    The response carries the new note id. To fix a note you wrote, use
+    cortex_note_update."""
     p = _principal()
     if not grants.can_write(p):
         return {"ok": False, "error": "write requires an approved connection"}
-    return corpus_service.ingest(p, content=content, kind=kind,
+    body = content if (content and content.strip()) else text
+    if not body or not body.strip():
+        return {"ok": False, "error": (
+            "content is required. Schema: content (required), kind "
+            "(default 'note'), tags (CSV, default ''), project (default "
+            "''). Call cortex_intro() for the full tool map.")}
+    return corpus_service.ingest(p, content=body, kind=kind,
                                  tags=tags or None, project=project or None)
+
+
+@mcp.tool(title="Correct an AI-written note",
+          annotations=ToolAnnotations(title="Correct an AI-written note",
+                                      readOnlyHint=False, destructiveHint=True,
+                                      idempotentHint=True, openWorldHint=False))
+def cortex_note_update(id: int, content: str = "", tags: str = "",
+                       project: str = "") -> dict[str, Any]:
+    """Fix a note the AI side wrote (source 'ai-generated', which includes
+    everything cortex_ingest writes): replace its content, retag it, or
+    move it to another project. Only the fields you pass change. `id` is
+    the numeric part of the un:<id> token.
+
+    The owner's own captures (phone, wearable, journal) are read-only
+    over MCP by design: to amend one of those, write a correcting note
+    with cortex_ingest that references its un:<id> token."""
+    return corpus_service.note_update(_principal(), id=id, content=content,
+                                      tags=tags, project=project)
 
 
 # ── Talking to the overseer ───────────────────────────────────────────
@@ -452,6 +683,34 @@ def cortex_org_get(tag: str) -> dict[str, Any]:
     return pillars_service.org_get(_principal(), tag)
 
 
+@mcp.tool(title="Upsert a Cortex organization",
+          annotations=ToolAnnotations(title="Upsert a Cortex organization",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=False))
+def cortex_org_upsert(tag: str, name: str = "", org_type: str = "",
+                      my_role: str = "", notes: str = "",
+                      is_active: int = -1) -> dict[str, Any]:
+    """Create or partially update an organization (the layer that groups
+    projects) by tag; only the fields you pass change. `org_type` is
+    free-form (e.g. 'company', 'thematic'). is_active=0 retires the org
+    from lists (soft: the row and its member projects stay; 1 restores,
+    -1 leaves it unchanged). Point projects at it via
+    cortex_project_upsert(org_tag=...). Works for any approved
+    connection."""
+    fields: dict[str, Any] = {}
+    if name:
+        fields["name"] = name
+    if org_type:
+        fields["org_type"] = org_type
+    if my_role:
+        fields["my_role"] = my_role
+    if notes:
+        fields["notes"] = notes
+    if is_active in (0, 1):
+        fields["is_active"] = int(is_active)
+    return pillars_service.org_upsert(_principal(), tag=tag, fields=fields)
+
+
 @mcp.tool(title="List Cortex tasks",
           annotations=ToolAnnotations(title="List Cortex tasks",
                                       readOnlyHint=True, idempotentHint=True,
@@ -489,15 +748,18 @@ def cortex_task_add(title: str, project: str, details: str = "",
           annotations=ToolAnnotations(title="Update a Cortex task",
                                       readOnlyHint=False, destructiveHint=False,
                                       idempotentHint=True, openWorldHint=False))
-def cortex_task_update(id: int = 0, uuid: str = "", status: str = "",
-                       details: str = "", priority: int = 0,
-                       due_date: str = "") -> dict[str, Any]:
-    """Update a task by id or uuid: status (open | in_progress | blocked |
-    done | cancelled), details, priority, or due_date. done/cancelled
-    stamp completed_at. Works for any approved connection."""
+def cortex_task_update(id: int = 0, uuid: str = "", title: str = "",
+                       status: str = "", details: str = "",
+                       priority: int = 0, due_date: str = "") -> dict[str, Any]:
+    """Update a task by id or uuid: title, status (open | in_progress |
+    blocked | done | cancelled), details, priority, or due_date. Only
+    passed fields change; done/cancelled stamp completed_at, and
+    cancelled is the soft remove (the record stays). Works for any
+    approved connection."""
     return pillars_service.task_update(_principal(), id=id, uuid=uuid,
-                                       status=status, details=details,
-                                       priority=priority, due_date=due_date)
+                                       title=title, status=status,
+                                       details=details, priority=priority,
+                                       due_date=due_date)
 
 
 @mcp.tool(title="List Cortex tech rules",
@@ -574,6 +836,23 @@ def cortex_rule_add(title: str, rule: str, stack: str = "",
     Works for any approved connection."""
     return pillars_service.rule_add(_principal(), title=title, rule=rule,
                                     stack=stack, situation=situation)
+
+
+@mcp.tool(title="Amend or retire a Cortex tech rule",
+          annotations=ToolAnnotations(title="Amend or retire a Cortex tech rule",
+                                      readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=False))
+def cortex_rule_update(title: str, rule: str = "", stack: str = "",
+                       situation: str = "", status: str = "") -> dict[str, Any]:
+    """Update an existing rule by its (case-insensitive) title: refine the
+    rule text, stack, or situation, or set status to 'retired' (or back
+    to 'active'). Only the fields you pass change, so retiring a rule
+    never erases its text. Retired rules drop out of the default
+    cortex_rules_list view but stay recorded. Works for any approved
+    connection."""
+    return pillars_service.rule_update(_principal(), title=title, rule=rule,
+                                       stack=stack, situation=situation,
+                                       status=status)
 
 
 @mcp.tool(title="Log a Cortex skill entry",

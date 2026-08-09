@@ -271,3 +271,130 @@ def test_write_empty_args_rejected_before_core(gw, routed_core):
     assert pillars_service.skill_log(_writer(), skill="s", content="")["ok"] is False
     assert pillars_service.project_upsert(_writer(), tag="", fields={})["ok"] is False
     assert routed_core.calls == []
+
+
+# ── 2026-08-08 write-surface completion: orgs, rule updates, note fixes ─
+
+def test_org_upsert_routes_to_cmd_upsert(gw, routed_core):
+    out = pillars_service.org_upsert(
+        _writer(), tag="open-muscle",
+        fields={"name": "Open Muscle", "org_type": "company"})
+    assert out["ok"] and out["tag"] == "open-muscle"
+    assert out["updated"] == ["name", "org_type"]
+    path, payload = routed_core.calls[0]
+    assert path == "/api/cmd" and payload["command"] == "upsert"
+    assert payload["payload"]["table"] == "organizations"
+    assert payload["payload"]["data"]["tag"] == "open-muscle"
+    assert payload["payload"]["data"]["org_type"] == "company"
+
+
+def test_org_retire_is_soft(gw, routed_core):
+    out = pillars_service.org_upsert(_writer(), tag="old",
+                                     fields={"is_active": 0})
+    assert out["ok"] and out["updated"] == ["is_active"]
+    _, payload = routed_core.calls[0]
+    assert payload["payload"]["data"]["is_active"] == 0
+
+
+def test_org_upsert_denied_without_grant(gw, routed_core):
+    out = pillars_service.org_upsert(_connector(), tag="x",
+                                     fields={"name": "X"})
+    assert out["ok"] is False and routed_core.calls == []
+
+
+def test_rule_update_retire_sends_status_without_blanking_text(gw, routed_core):
+    out = pillars_service.rule_update(_writer(), title="Old rule",
+                                      status="retired")
+    assert out["ok"]
+    path, payload = routed_core.calls[0]
+    assert path == "/plugins/overseer/rules/add"
+    assert payload["status"] == "retired"
+    assert "rule" not in payload      # retiring must not blank the text
+    assert payload["source"] == "connector:openclaw"
+
+
+def test_rule_update_rejects_bad_status(gw, routed_core):
+    out = pillars_service.rule_update(_writer(), title="x", status="deleted")
+    assert out["ok"] is False and "active" in out["error"]
+    assert routed_core.calls == []
+
+
+def test_rule_update_requires_a_change(gw, routed_core):
+    out = pillars_service.rule_update(_writer(), title="x")
+    assert out["ok"] is False and routed_core.calls == []
+
+
+def test_task_update_title_routes(gw, routed_core):
+    out = pillars_service.task_update(_writer(), id=5, title="Sharper name")
+    assert out["ok"] and out["updated"] == ["title"]
+    _, payload = routed_core.calls[0]
+    assert payload["payload"]["table"] == "tasks"
+    assert payload["payload"]["data"]["title"] == "Sharper name"
+
+
+# ── Note corrections (corpus_service.note_update) ─────────────────────
+
+def _seed_notes(db):
+    db.execute("""CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
+        tags TEXT DEFAULT '', project TEXT DEFAULT '',
+        note_type TEXT DEFAULT 'note', source TEXT DEFAULT 'ble',
+        session_id TEXT, created_at TEXT DEFAULT '2026-01-01')""")
+    db.execute("INSERT INTO notes (content, source) VALUES "
+               "('ai wrote this', 'ai-generated')")
+    db.execute("INSERT INTO notes (content, source) VALUES "
+               "('owner phone capture', 'mobile')")
+    for fn in (db.has_table, db._schema_of, db.table, db.columns):
+        fn.cache_clear()
+
+
+@pytest.fixture()
+def notes_db(gw, monkeypatch):
+    config, db, oauth = gw
+    _seed_notes(db)
+    monkeypatch.setattr(corpus_service.grants, "has_full_access",
+                        lambda p: True)
+    rec = _CoreRec()
+    monkeypatch.setattr(corpus_service.corpus_writes, "routed", lambda: True)
+    monkeypatch.setattr(corpus_service.corpus_writes, "core", lambda: rec)
+    return rec
+
+
+def test_note_update_fixes_ai_note(notes_db):
+    out = corpus_service.note_update(_connector(), id=1,
+                                     content="ai wrote this, corrected")
+    assert out["ok"] and out["note_id"] == 1 and out["updated"] == ["content"]
+    path, payload = notes_db.calls[0]
+    assert path == "/api/cmd"
+    assert payload["payload"]["table"] == "notes"
+    assert payload["payload"]["data"]["id"] == 1
+    assert payload["payload"]["data"]["content"] == "ai wrote this, corrected"
+
+
+def test_note_update_refuses_owner_captures(notes_db):
+    out = corpus_service.note_update(_connector(), id=2, content="rewrite")
+    assert out["ok"] is False and "read-only" in out["error"]
+    assert "cortex_ingest" in out["error"]    # the error teaches the way out
+    assert notes_db.calls == []
+
+
+def test_note_update_unknown_id(notes_db):
+    out = corpus_service.note_update(_connector(), id=999, content="x")
+    assert out["ok"] is False and "not found" in out["error"]
+    assert notes_db.calls == []
+
+
+def test_note_update_requires_a_change(notes_db):
+    out = corpus_service.note_update(_connector(), id=1)
+    assert out["ok"] is False and "nothing to change" in out["error"]
+    assert notes_db.calls == []
+
+
+def test_note_update_denied_without_grant(gw, monkeypatch):
+    config, db, oauth = gw
+    _seed_notes(db)
+    monkeypatch.setattr(corpus_service.grants, "has_full_access",
+                        lambda p: False)
+    out = corpus_service.note_update(_connector(), id=1, content="x")
+    assert out["ok"] is False
+    assert out["error"] == "write requires an approved connection"

@@ -284,7 +284,7 @@ def task_add(principal: Principal, *, title: str, project: str,
 
 
 def task_update(principal: Principal, *, id: int = 0, uuid: str = "",
-                status: str = "", details: str = "",
+                title: str = "", status: str = "", details: str = "",
                 priority: int = 0, due_date: str = "") -> dict:
     if not grants.can_write(principal):
         return {"ok": False, "error": _WRITE_DENIED}
@@ -295,6 +295,8 @@ def task_update(principal: Principal, *, id: int = 0, uuid: str = "",
         values["id"] = int(id)
     if uuid:
         values["uuid"] = uuid.strip()
+    if title:
+        values["title"] = title.strip()
     if status:
         values["status"] = status.strip()
     if details:
@@ -446,10 +448,70 @@ def rule_add(principal: Principal, *, title: str, rule: str,
             "source": f"connector:{principal.name}"})
     except CoreWriteError:
         return {"ok": False, "error": "core unavailable for write"}
+    if not out.get("ok"):
+        # Surface the core's own rejection instead of an ok with no id.
+        return {"ok": False, "error": str(out.get("error") or
+                                          "rule write failed")[:300]}
     # The core route nests the row: {"ok", "rule": {"id", ...}, "created"}.
     saved = out.get("rule") or {}
     return {"ok": True, "title": title, "id": saved.get("id"),
             "created": out.get("created")}
+
+
+def rule_update(principal: Principal, *, title: str, rule: str = "",
+                stack: str = "", situation: str = "",
+                status: str = "") -> dict:
+    """Amend or retire an existing rule by its (case-insensitive) title.
+    Same core upsert as rule_add: only supplied fields overwrite, and
+    status flips only when explicitly given, so retiring a rule never
+    erases its text."""
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
+    title = (title or "").strip()
+    if not title:
+        return {"ok": False, "error": "title is required"}
+    status = (status or "").strip().lower()
+    if status and status not in ("active", "retired"):
+        return {"ok": False, "error": "status must be 'active' or 'retired'"}
+    payload = {"title": title, "source": f"connector:{principal.name}"}
+    for key, val in (("rule", rule), ("stack", stack),
+                     ("situation", situation)):
+        if val and val.strip():
+            payload[key] = val.strip()
+    if status:
+        payload["status"] = status
+    if set(payload) <= {"title", "source"}:
+        return {"ok": False, "error":
+                "nothing to change: pass rule, stack, situation, or status"}
+    try:
+        out = corpus_writes.rule_add(payload)
+    except CoreWriteError:
+        return {"ok": False, "error": "core unavailable for write"}
+    if not out.get("ok"):
+        # e.g. updating a title that does not exist without rule text:
+        # the core refuses to create a rule with no body.
+        return {"ok": False, "error": str(out.get("error") or
+                                          "rule update failed")[:300]}
+    saved = out.get("rule") or {}
+    return {"ok": True, "title": title, "id": saved.get("id"),
+            "created": bool(out.get("created")),
+            "status": saved.get("status")}
+
+
+def org_upsert(principal: Principal, *, tag: str, fields: dict) -> dict:
+    """Create or partially update an organization by tag, mirroring
+    project_upsert. is_active=0 in fields retires the org from lists
+    (soft; the row and its member links stay)."""
+    if not grants.can_write(principal):
+        return {"ok": False, "error": _WRITE_DENIED}
+    tag = (tag or "").strip()
+    if not tag:
+        return {"ok": False, "error": "tag is required"}
+    try:
+        corpus_writes.patch_org(tag, fields)
+    except CoreWriteError:
+        return {"ok": False, "error": "core unavailable for write"}
+    return {"ok": True, "tag": tag, "updated": sorted(fields)}
 
 
 def skill_log(principal: Principal, *, skill: str, content: str,
