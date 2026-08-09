@@ -724,13 +724,22 @@ function TemporalNarrativesSection() {
     void refresh()
   }, [refresh])
 
-  const handleGenerate = async (kind: string) => {
-    setBusyKind(kind)
+  // period_label targets a SPECIFIC period (e.g. one past day, matching
+  // the phone's reprocess-day button); omitted, the core defaults to the
+  // current period. Bounds derive from the label server-side, so a
+  // historical regen reads historical data.
+  const handleGenerate = async (kind: string, periodLabel?: string) => {
+    setBusyKind(periodLabel ? `${kind}:${periodLabel}` : kind)
     setError(null)
     try {
       const r = await apiFetch<GenerateTemporalResp>(
         '/overseer/temporal/generate',
-        { method: 'POST', body: JSON.stringify({ kind, force: true }) },
+        {
+          method: 'POST',
+          body: JSON.stringify(periodLabel
+            ? { kind, period_label: periodLabel, force: true }
+            : { kind, force: true }),
+        },
       )
       if (!r.ok) {
         setError(r.error || 'generate failed')
@@ -743,6 +752,11 @@ function TemporalNarrativesSection() {
       setBusyKind(null)
     }
   }
+
+  // The phone parity ask (2026-08-09): regenerate ANY day, not just the
+  // current period. Defaults to today.
+  const [dayPick, setDayPick] = useState(() =>
+    new Date().toISOString().slice(0, 10))
 
   const toggleExpanded = useCallback((id: number) => {
     setExpandedIds((prev) => {
@@ -763,9 +777,12 @@ function TemporalNarrativesSection() {
           Temporal narratives
         </h3>
         <p className="text-xs text-text-muted mt-1">
-          Daily / Weekly / Monthly Sonnet rollups. Loop fires daily at 22:00 local,
-          weekly Sunday 22:00, monthly the 1st 22:00 (skipped if no daily in past
-          14 days). Click "Generate now" to bypass the schedule.
+          Daily / Weekly / Monthly rollups. Loop fires daily at 22:00 local,
+          weekly Sunday 22:00, monthly the 1st 22:00 (skipped if no daily in
+          past 14 days). "Generate now" bypasses the schedule; the date field
+          regenerates any specific day, and per-entry "Regenerate" refreshes
+          that period from everything it holds. Dailies run on a cheap model
+          (temporal-daily in Settings), so a regen costs tenths of a cent.
         </p>
         {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
       </header>
@@ -793,13 +810,35 @@ function TemporalNarrativesSection() {
                     {showAll ? 'Latest only' : `All ${kind}`}
                   </button>
                 )}
-                <button
-                  onClick={() => handleGenerate(kind)}
-                  disabled={isBusy || loading}
-                  className="ml-auto text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
-                >
-                  {isBusy ? 'Generating…' : 'Generate now'}
-                </button>
+                <span className="ml-auto flex items-center gap-3">
+                  {kind === 'daily' && (
+                    <span className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        value={dayPick}
+                        onChange={(e) => setDayPick(e.target.value)}
+                        className="bg-surface-secondary border border-border rounded px-1.5 py-0.5 text-[11px] text-text-secondary focus:outline-none focus:border-accent/60 [color-scheme:dark]"
+                        aria-label="Day to regenerate"
+                      />
+                      <button
+                        onClick={() => handleGenerate('daily', dayPick)}
+                        disabled={busyKind === `daily:${dayPick}` || loading}
+                        className="text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
+                      >
+                        {busyKind === `daily:${dayPick}`
+                          ? 'Generating…'
+                          : 'Generate day'}
+                      </button>
+                    </span>
+                  )}
+                  <button
+                    onClick={() => handleGenerate(kind)}
+                    disabled={isBusy || loading}
+                    className="text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
+                  >
+                    {isBusy ? 'Generating…' : 'Generate now'}
+                  </button>
+                </span>
               </div>
               {visible.length === 0 ? (
                 <div className="px-4 py-6 text-xs text-text-muted text-center italic">
@@ -815,6 +854,9 @@ function TemporalNarrativesSection() {
                       n={n}
                       expanded={expandedIds.has(n.id)}
                       toggleExpanded={() => toggleExpanded(n.id)}
+                      busy={busyKind === `${n.kind}:${n.period_label}`}
+                      onRegenerate={() =>
+                        handleGenerate(n.kind, n.period_label)}
                     />
                   ))}
                 </ul>
@@ -831,10 +873,14 @@ function TemporalEntry({
   n,
   expanded,
   toggleExpanded,
+  busy,
+  onRegenerate,
 }: {
   n: TemporalNarrative
   expanded: boolean
   toggleExpanded: () => void
+  busy: boolean
+  onRegenerate: () => void
 }) {
   // Truncate to first paragraph by default — same pattern as
   // ProjectsTab's narrative block.
@@ -853,8 +899,18 @@ function TemporalEntry({
             <span className="ml-1 text-text-muted/60">· manual</span>
           )}
         </span>
-        <span className="ml-auto text-[10px] text-text-muted/60 tabular-nums">
-          ${n.cost_usd?.toFixed(4) || '0'}
+        <span className="ml-auto flex items-baseline gap-3">
+          <button
+            onClick={onRegenerate}
+            disabled={busy}
+            className="text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
+            title={`Regenerate ${n.period_label} from everything it holds`}
+          >
+            {busy ? 'Regenerating…' : 'Regenerate'}
+          </button>
+          <span className="text-[10px] text-text-muted/60 tabular-nums">
+            ${n.cost_usd?.toFixed(4) || '0'}
+          </span>
         </span>
       </div>
       <p className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">
