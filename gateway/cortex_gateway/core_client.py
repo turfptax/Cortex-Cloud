@@ -89,3 +89,22 @@ def core() -> CoreClient:
     Cheap, and avoids a module-global client binding stale settings in
     tests that monkeypatch env."""
     return CoreClient()
+
+
+def write_error_text(e: CoreWriteError) -> str:
+    """The core's own words, fit for a connector.
+
+    A contract rejection carries the reason and often the remedy (e.g.
+    "unknown project 'x'; create the project first or use a known
+    tag"). Every write endpoint used to swallow that into a blanket
+    "core unavailable for write", which taught connectors to retry a
+    server that was never down instead of fixing their call; the owner
+    hit exactly this on 2026-08-09 and concluded task creation was
+    broken. Genuine unreachability keeps its honest "core unreachable"
+    text from the client above."""
+    msg = str(e)
+    for prefix in ("ERR:upsert:", "ERR:"):
+        if msg.startswith(prefix):
+            msg = msg[len(prefix):].lstrip()
+            break
+    return (msg or "core write failed")[:300]

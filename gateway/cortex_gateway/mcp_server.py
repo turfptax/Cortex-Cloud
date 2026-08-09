@@ -290,6 +290,11 @@ def _build_intro(principal: Principal,
             "`future_note` = AI-written. Do not confuse them.",
             "Write tools answer ok=false with the reason when your "
             "connection lacks write approval; they never throw.",
+            "Read write errors literally: 'core unreachable' means try "
+            "again later; anything else is a contract rejection whose "
+            "text names the fix (e.g. unknown project -> "
+            "cortex_projects_list for the tag or cortex_project_upsert "
+            "to create it, then retry).",
         ],
     }
     if not writable:
@@ -737,8 +742,11 @@ def cortex_task_add(title: str, project: str, details: str = "",
                     priority: int = 3, due_date: str = "") -> dict[str, Any]:
     """Record a task under a project so later agents see it: shared
     MEMORY, not an execution queue (the owner's separate tracker handles
-    claiming real work). The project must exist; observed names resolve
-    through the alias map. Works for any approved connection."""
+    claiming real work). The project must already exist; observed names
+    resolve through the alias map, and an unknown project is REJECTED
+    with the reason in the error (fix: cortex_projects_list to find the
+    right tag, or cortex_project_upsert to create it first, then retry).
+    Works for any approved connection."""
     return pillars_service.task_add(_principal(), title=title,
                                     project=project, details=details,
                                     priority=priority, due_date=due_date)

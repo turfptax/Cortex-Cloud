@@ -398,3 +398,60 @@ def test_note_update_denied_without_grant(gw, monkeypatch):
     out = corpus_service.note_update(_connector(), id=1, content="x")
     assert out["ok"] is False
     assert out["error"] == "write requires an approved connection"
+
+
+# ── 2026-08-09: core rejections surface in the core's own words ───────
+# The blanket "core unavailable for write" taught connectors to retry a
+# server that was never down; the owner concluded task creation was
+# broken. A rejection now carries its reason (and usually its remedy);
+# only genuine unreachability says unreachable.
+
+class _CoreRejects:
+    def __init__(self, message):
+        from cortex_gateway.core_client import CoreWriteError
+        self.exc = CoreWriteError(message)
+
+    def post(self, path, payload):
+        raise self.exc
+
+
+def _with_core(monkeypatch, rec):
+    monkeypatch.setattr(pillars_service.corpus_writes, "routed", lambda: True)
+    monkeypatch.setattr(pillars_service.corpus_writes, "core", lambda: rec)
+
+
+def test_unknown_project_rejection_surfaces_the_reason(gw, monkeypatch):
+    _with_core(monkeypatch, _CoreRejects(
+        "ERR:upsert:unknown project 'ai-progress'; create the project "
+        "first or use a known tag"))
+    out = pillars_service.task_add(_writer(), title="t",
+                                   project="ai-progress")
+    assert out["ok"] is False
+    assert "unknown project 'ai-progress'" in out["error"]
+    assert "create the project first" in out["error"]
+    assert "unavailable" not in out["error"]
+
+
+def test_unreachable_core_still_says_unreachable(gw, monkeypatch):
+    _with_core(monkeypatch, _CoreRejects(
+        "core unreachable: timed out"))
+    out = pillars_service.task_add(_writer(), title="t", project="cortex")
+    assert out["ok"] is False
+    assert "core unreachable" in out["error"]
+
+
+def test_rejection_surfacing_covers_every_write(gw, monkeypatch):
+    _with_core(monkeypatch, _CoreRejects("ERR:upsert:contract said no"))
+    monkeypatch.setattr(corpus_service.corpus_writes, "routed", lambda: True)
+    monkeypatch.setattr(corpus_service.corpus_writes, "core",
+                        lambda: _CoreRejects("ERR:upsert:contract said no"))
+    outs = [
+        pillars_service.task_update(_writer(), id=1, status="done"),
+        pillars_service.project_upsert(_writer(), tag="x",
+                                       fields={"name": "X"}),
+        pillars_service.org_upsert(_writer(), tag="x",
+                                   fields={"name": "X"}),
+    ]
+    for out in outs:
+        assert out["ok"] is False
+        assert out["error"] == "contract said no", out

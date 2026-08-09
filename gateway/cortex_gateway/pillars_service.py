@@ -19,7 +19,7 @@ import logging
 
 from . import corpus_service, corpus_writes, db, grants
 from .auth import Principal
-from .core_client import CoreWriteError
+from .core_client import CoreWriteError, write_error_text
 
 # Shown to a connector whose connection is not approved for writing.
 _WRITE_DENIED = "write requires an approved connection"
@@ -274,8 +274,8 @@ def task_add(principal: Principal, *, title: str, project: str,
               "source": "agent", "created_by": _caller(principal)}
     try:
         task_id = corpus_writes.upsert_task(values)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     except Exception as e:
         # the core's write contract rejects bad projects/status with a
         # useful message; surface it verbatim
@@ -309,8 +309,8 @@ def task_update(principal: Principal, *, id: int = 0, uuid: str = "",
         return {"ok": False, "error": "nothing to update"}
     try:
         task_id = corpus_writes.upsert_task(values)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "id": task_id or values.get("id"),
@@ -429,8 +429,8 @@ def project_upsert(principal: Principal, *, tag: str, fields: dict) -> dict:
         return {"ok": False, "error": "tag is required"}
     try:
         corpus_writes.patch_project(tag, fields)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     return {"ok": True, "tag": tag, "updated": sorted(fields)}
 
 
@@ -446,8 +446,8 @@ def rule_add(principal: Principal, *, title: str, rule: str,
             "title": title, "rule": rule, "stack": (stack or "").strip(),
             "situation": (situation or "").strip(),
             "source": f"connector:{principal.name}"})
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     if not out.get("ok"):
         # Surface the core's own rejection instead of an ok with no id.
         return {"ok": False, "error": str(out.get("error") or
@@ -485,8 +485,8 @@ def rule_update(principal: Principal, *, title: str, rule: str = "",
                 "nothing to change: pass rule, stack, situation, or status"}
     try:
         out = corpus_writes.rule_add(payload)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     if not out.get("ok"):
         # e.g. updating a title that does not exist without rule text:
         # the core refuses to create a rule with no body.
@@ -509,8 +509,8 @@ def org_upsert(principal: Principal, *, tag: str, fields: dict) -> dict:
         return {"ok": False, "error": "tag is required"}
     try:
         corpus_writes.patch_org(tag, fields)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     return {"ok": True, "tag": tag, "updated": sorted(fields)}
 
 
@@ -528,8 +528,8 @@ def skill_log(principal: Principal, *, skill: str, content: str,
         payload["proficiency"] = proficiency.strip()
     try:
         out = corpus_writes.skill_log(payload)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     # The core route nests the row: {"ok", "skill": {...}, "entry": {"id",
     # "skill_id", ...}, "skill_created"}.
     entry = out.get("entry") or {}

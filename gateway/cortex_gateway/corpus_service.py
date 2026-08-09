@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from . import corpus_writes, db, grants, sensitivity
 from .auth import Principal
 from .config import get_settings
-from .core_client import CoreWriteError
+from .core_client import CoreWriteError, write_error_text
 from .search_maps import (ABSTRACTION_KINDS, PREFIX_TARGETS, SEARCH_TARGETS,
                           resolve_kind)
 
@@ -444,10 +444,15 @@ def ingest(principal: Principal, *, content: str, kind: str = "note",
     if not content or not content.strip():
         return {"ok": False, "error": "content is required"}
     source = "cortex" if principal.has("app") else "ai-generated"
-    new_id = corpus_writes.insert_note({
-        "content": content, "note_type": kind or "note",
-        "project": project or "", "tags": tags or "", "source": source,
-    })
+    try:
+        new_id = corpus_writes.insert_note({
+            "content": content, "note_type": kind or "note",
+            "project": project or "", "tags": tags or "", "source": source,
+        })
+    except CoreWriteError as e:
+        # Surface the core's words instead of letting the exception
+        # escape as a raw MCP protocol error.
+        return {"ok": False, "error": write_error_text(e)}
     return {"ok": True, "note_id": new_id, "note_type": kind or "note",
             "project": project or "", "source": source}
 
@@ -488,6 +493,6 @@ def note_update(principal: Principal, *, id: int, content: str = "",
                 "error": "nothing to change: pass content, tags, or project"}
     try:
         corpus_writes.patch_note(nid, fields)
-    except CoreWriteError:
-        return {"ok": False, "error": "core unavailable for write"}
+    except CoreWriteError as e:
+        return {"ok": False, "error": write_error_text(e)}
     return {"ok": True, "note_id": nid, "updated": sorted(fields)}
