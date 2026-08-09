@@ -12,6 +12,29 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-09: check-ins fire on data, not on a timer; stale reminders age out
+
+**Nothing to do.** Three loop-honesty changes, all deterministic and LLM-free:
+
+- **Trigger-gated check-in.** The overseer writes a status note (note_type
+  `checkin`, source `overseer`) only when owner-side data actually arrived
+  since the last one: new notes (a phone sync, a voice capture, an AI note)
+  or new journal entries. A minimum-hours floor (`loop_checkin_min_hours`,
+  default 4) spaces them out; held data still gets reported when the floor
+  lifts. The first tick anchors the high-water mark and writes nothing.
+  This answers the overseer's own standing ask: the retired Pi-era 90-minute
+  timer produced mostly "nothing happened" notes.
+- **Reminder aging.** Reminder-type notes have no closed state, so old ones
+  surfaced as "open" in working memory forever (June's fossils were still
+  nagging in August). `working_memory_reminder_max_age_days` (default 45)
+  ages them out of the open view; the rows themselves are untouched.
+- **The gist origin counter stops crying wolf.** Notes-digest and rollup
+  gists never write tags-table rows, so the freshness block's origin
+  distribution counted fully-labeled windows as all-untagged. The counter
+  now falls back to the gist row itself (period_label, project_tag).
+
+All three dials are editable on the web Settings page's Overseer card.
+
 ## 2026-08-08: the MCP surface explains itself, and every pillar got modify/remove
 
 **Nothing to do.** New tools appear to connectors on their next tools/list;

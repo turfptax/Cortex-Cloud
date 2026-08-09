@@ -3235,6 +3235,22 @@ class OverseerDB(CortexDB):
                   and row_id not in by_gist):
                 # project: is the fallback for rollups
                 by_gist[row_id] = "rollup:" + tag.split(":", 1)[1]
+        # 2026-08-09: paths that never write tags-TABLE rows were all
+        # counted "untagged", which made the freshness bias-warning cry
+        # wolf (a 30/30-untagged window that was really all labeled
+        # notes digests). Fall back to the gist ROW itself: the
+        # notes-digest period_label, then project_tag (OPT-0).
+        missing = [i for i in ids if i not in by_gist]
+        if missing:
+            ph = ",".join("?" * len(missing))
+            for row in self._conn.execute(
+                    f"SELECT id, period_label, project_tag "
+                    f"FROM summaries_gist WHERE id IN ({ph})", missing):
+                label = str(row["period_label"] or "")
+                if label.startswith(("user-notes:", "mobile-notes:")):
+                    by_gist[row["id"]] = "digest:user-notes"
+                elif row["project_tag"]:
+                    by_gist[row["id"]] = "rollup:" + str(row["project_tag"])
         by_origin: dict[str, int] = {}
         for origin in by_gist.values():
             by_origin[origin] = by_origin.get(origin, 0) + 1

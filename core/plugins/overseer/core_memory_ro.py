@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -118,8 +119,20 @@ class CoreMemoryRO:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def open_reminders(self, *, limit=50):
-        return self.recent_notes(limit=limit, note_type="reminder")
+    def open_reminders(self, *, limit=50, max_age_days=None):
+        """Reminder-type notes, newest first. Reminders have no closed
+        state, so `max_age_days` is the aging mechanic: beyond it a
+        reminder stops being "open" and stops surfacing in working
+        memory and chat context (2026-08-09; the June Pi-era check-in
+        fossils were nagging the overseer on every tick). None keeps
+        the unbounded legacy behavior."""
+        since = None
+        if max_age_days is not None and int(max_age_days) > 0:
+            since = (datetime.now(timezone.utc)
+                     - timedelta(days=int(max_age_days))
+                     ).strftime("%Y-%m-%d %H:%M:%S")
+        return self.recent_notes(limit=limit, note_type="reminder",
+                                 since_iso=since)
 
     def recent_decisions(self, *, limit=20):
         return self.recent_notes(limit=limit, note_type="decision")
