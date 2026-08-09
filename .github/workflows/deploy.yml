@@ -109,21 +109,44 @@ jobs:
           # NB: healthState is deliberately NOT used as the gate. A gateway that
           # crashed at import still reported Healthy, because ACA's injected
           # default probe hits the ingress port, where the auth sidecar answers.
-          active=""; weight=""
-          for i in $(seq 1 30); do
+          #
+          # 2026-08-09: trafficWeight is not enough either. ACA declares 100%
+          # on the new revision while it is still Activating and KEEPS ROUTING
+          # to the old draining replica, so every URL assertion below aimed at
+          # the old app and two wedged deploys (a crash-looping restore init)
+          # went green in CI. runningState is the only field that says the new
+          # replica itself serves; wait for it, and give the wait real time,
+          # because a cold litestream restore of a grown corpus is minutes.
+          active=""; weight=""; state=""
+          for i in $(seq 1 40); do
             active=$(az containerapp show -g "$RG" -n "$APP" \
               --query "properties.latestRevisionName" -o tsv | tr -d '\r')
             weight=$(az containerapp revision list -g "$RG" -n "$APP" \
               --query "[?name=='${REV}'].properties.trafficWeight | [0]" \
               -o tsv | tr -d '\r')
-            if [ "$active" = "$REV" ] && [ "$weight" = "100" ]; then break; fi
-            sleep 10
+            state=$(az containerapp revision list -g "$RG" -n "$APP" \
+              --query "[?name=='${REV}'].properties.runningState | [0]" \
+              -o tsv | tr -d '\r')
+            echo "wait $i: active=$active weight=$weight state=$state"
+            if [ "$active" = "$REV" ] && [ "$weight" = "100" ] \
+               && { [ "$state" = "Running" ] || [ "$state" = "RunningAtMaxScale" ]; }; then
+              break
+            fi
+            sleep 15
           done
           test "$active" = "$REV" || {
             echo "::error::active revision is '$active', expected '$REV'"; exit 1; }
           test "$weight" = "100" || {
             echo "::error::revision $REV holds '$weight'% of traffic, expected 100"; exit 1; }
-          echo "new revision $REV is serving 100% of traffic"
+          if [ "$state" != "Running" ] && [ "$state" != "RunningAtMaxScale" ]; then
+            echo "::error::revision $REV never reached Running (last state: $state)."
+            echo "::error::If the state is Activating/ActivationFailed with 0 container"
+            echo "::error::restarts, suspect the restore init container: check the"
+            echo "::error::'restore' container logs in Log Analytics and the litestream"
+            echo "::error::replica health (see docs/OPERATOR_NOTES.md 2026-08-01 + 08-09)."
+            exit 1
+          fi
+          echo "new revision $REV is Running and serving 100% of traffic"
 
           # STEP 2: now the assertions mean something, because they are aimed at
           # the revision we just built. These go through to the app, so a dead

@@ -6,6 +6,15 @@
 #   LITESTREAM_AZURE_ACCOUNT_KEY   (ACA secret)
 #   LITESTREAM_ACCOUNT             storage account name
 #   LITESTREAM_CONTAINER           blob container for replicas
+#
+# snapshot-interval + retention are EXPLICIT after the 2026-08-09
+# incident: on defaults, retention enforcement left cortex.db with ONE
+# generation, ONE snapshot, and the WAL bytes before that snapshot's
+# own start offset pruned, so no point in time could be restored and
+# every deploy's restore init wedged (CI stayed green; see the
+# OPERATOR_NOTES entry). Frequent snapshots mean pruning always has a
+# newer complete restore point standing before anything is deleted,
+# and a 72h window keeps roughly a dozen of them per database.
 dbs:
   - path: /data/cortex.db
     replicas:
@@ -13,9 +22,13 @@ dbs:
         account-name: ${LITESTREAM_ACCOUNT}
         bucket: ${LITESTREAM_CONTAINER}
         path: cortex.db
+        snapshot-interval: 6h
+        retention: 72h
   - path: /data/gateway.db
     replicas:
       - type: abs
         account-name: ${LITESTREAM_ACCOUNT}
         bucket: ${LITESTREAM_CONTAINER}
         path: gateway.db
+        snapshot-interval: 6h
+        retention: 72h
