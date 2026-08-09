@@ -35,6 +35,7 @@ from pathlib import Path
 from plugin_api import Plugin, Route
 from overseer_db import OverseerDB
 from llm_router import LLMRouter
+from settings import OverseerSettings, LayeredConfig
 from core_memory_ro import CoreMemoryRO
 from ingest_session_0 import ingest_seed
 from loop import OverseerLoop
@@ -310,6 +311,7 @@ class OverseerPlugin(Plugin):
         self.llm: LLMRouter | None = None
         self.core_memory: CoreMemoryRO | None = None
         self.loop: OverseerLoop | None = None
+        self.settings: OverseerSettings | None = None
         self._seed_summary: dict = {}
 
     # ── Context contribution (slice 3d-A) ───────────────────────
@@ -389,6 +391,13 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/llm/stats",             self._http_llm_stats),
             # Slice 14.6 CP1: per-model + per-purpose cost attribution.
             Route("GET",  "/llm/attribution",       self._http_llm_attribution),
+            # ── Runtime settings (2026-08-08): the owner's dials ──
+            # Per-instance overrides on plugin.toml (model choice, loop
+            # budgets, ingest lists), stored in overseer_state. The web
+            # Hub reaches these through the gateway's overseer facade.
+            Route("GET",  "/settings",              self._http_settings_get),
+            Route("POST", "/settings",              self._http_settings_set),
+            Route("GET",  "/settings/models",       self._http_settings_models),
             Route("POST", "/summarize-recent",      self._http_summarize_recent),
             Route("GET",  "/themes",                self._http_themes),
             Route("GET",  "/episodes",              self._http_episodes),
@@ -719,11 +728,31 @@ class OverseerPlugin(Plugin):
             with open(plugin_folder / "plugin.toml", "rb") as f:
                 manifest = tomllib.load(f)
             llm_cfg = manifest.get("llm", {})
+            config_cfg = manifest.get("config", {})
         except Exception as e:
             self.api.log.warning(
                 "could not read plugin.toml [llm] (%s); using defaults", e)
             llm_cfg = {}
-        self.llm = LLMRouter(manifest_llm=llm_cfg, db=self.overseer_db)
+            config_cfg = {}
+
+        # Step 3a: runtime settings - the owner's per-instance overlay on
+        # plugin.toml, stored in overseer_state (see settings.py). Built
+        # BEFORE the router and the loop so both consult it, and swapped
+        # in as api.config so every existing config consumer (budgets,
+        # journal gate, ingest lists) honors overrides on its next read.
+        self.settings = OverseerSettings(
+            db=self.overseer_db,
+            manifest_llm=llm_cfg,
+            manifest_config=config_cfg,
+        )
+        self.api.config = LayeredConfig(self.settings, self.api.config)
+        n_overrides = len(self.settings.overrides())
+        if n_overrides:
+            self.api.log.info(
+                "runtime settings: %d override(s) active", n_overrides)
+
+        self.llm = LLMRouter(manifest_llm=llm_cfg, db=self.overseer_db,
+                             settings=self.settings)
         self.api.llm = self.llm
         self.api.log.info(
             "llm router wired (default backend=%s, fallback=%s)",
@@ -914,6 +943,52 @@ class OverseerPlugin(Plugin):
             return {"ok": False, "error": "overseer not initialized"}
         days = _as_int(payload, "days", 7, max_value=365)
         return {"ok": True, **self.overseer_db.llm_attribution_stats(days)}
+
+    def _http_settings_get(self, payload):
+        """GET /plugins/overseer/settings - the runtime settings
+        snapshot: schema + manifest defaults + active overrides +
+        effective values, ready for the settings UI."""
+        if self.settings is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        return {"ok": True, **self.settings.describe()}
+
+    def _http_settings_set(self, payload):
+        """POST /plugins/overseer/settings - apply a settings batch.
+
+        Body: {"set": {key: value, ...}, "reset": [key, ...]}
+        Allowlisted keys only; validation is all-or-nothing so a typo
+        can't half-apply. Model changes bind on the next LLM call, loop
+        dials on the next tick - no restart. Returns the new snapshot.
+        """
+        if self.settings is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        payload = payload or {}
+        sets = payload.get("set") or {}
+        resets = payload.get("reset") or []
+        if not isinstance(sets, dict) or not isinstance(resets, list):
+            return {"ok": False,
+                    "error": "'set' must be an object and 'reset' a list"}
+        if not sets and not resets:
+            return {"ok": False, "error": "nothing to change"}
+        try:
+            self.settings.apply(sets=sets, resets=resets)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            self.api.log.exception("settings apply failed: %s", e)
+            return {"ok": False, "error": "could not save settings"}
+        return {"ok": True, **self.settings.describe()}
+
+    def _http_settings_models(self, payload):
+        """GET /plugins/overseer/settings/models - the OpenRouter model
+        catalog (id, name, context, per-1M pricing) for the picker.
+        Cached an hour; serves the stale copy if a refresh fails."""
+        if self.llm is None:
+            return {"ok": False, "error": "overseer not initialized"}
+        try:
+            return {"ok": True, **self.llm.models_catalog()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _http_summarize_recent(self, payload):
         """POST /plugins/overseer/summarize-recent - end-to-end smoke test.
