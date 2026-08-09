@@ -12,6 +12,33 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-08: the MCP surface explains itself, and every pillar got modify/remove
+
+**Nothing to do.** New tools appear to connectors on their next tools/list;
+existing tools keep their contracts.
+
+Connecting AIs had no way to see the schema without failing at it first (the
+reference owner's voice-session logs caught an AI guessing `text` for
+cortex_ingest's `content`). Three things changed:
+
+- **cortex_intro**, a run-this-first tool: the live tool roster with call
+  shapes (generated from the registry at call time, so it cannot drift),
+  whether the calling connection can write, the per-pillar write contract
+  (add / modify / remove), the token legend, and the common gotchas.
+  `brief=true` adds the owner-context brief.
+- **The surface is now CRUD-complete, softly**: cortex_note_update corrects
+  AI-written notes (owner captures stay read-only over MCP),
+  cortex_org_upsert creates/edits/retires organizations (is_active=0),
+  cortex_rule_update refines or retires a rule by title, cortex_task_update
+  can retitle. Every remove is a status flip, never deletion. People remains
+  owner-only.
+- **A drift guard in CI**: test_mcp_discovery fails any change that adds a
+  tool without naming it in the server instructions, and any write tool
+  missing from the write contract. The tool list can no longer silently rot.
+
+cortex_ingest also tolerates `text` as an alias for `content` and answers a
+missing body with the full schema instead of a bare error.
+
 ## 2026-08-01: a corrupt gateway.db replica can stop your instance booting
 
 **If you run an instance, pull master.** This was a ~2 day outage caused by code

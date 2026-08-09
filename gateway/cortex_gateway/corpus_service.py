@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from . import corpus_writes, db, grants, sensitivity
 from .auth import Principal
 from .config import get_settings
+from .core_client import CoreWriteError
 from .search_maps import (ABSTRACTION_KINDS, PREFIX_TARGETS, SEARCH_TARGETS,
                           resolve_kind)
 
@@ -449,3 +450,44 @@ def ingest(principal: Principal, *, content: str, kind: str = "note",
     })
     return {"ok": True, "note_id": new_id, "note_type": kind or "note",
             "project": project or "", "source": source}
+
+
+def note_update(principal: Principal, *, id: int, content: str = "",
+                tags: str = "", project: str = "") -> dict:
+    """Correct a note the AI side wrote. Only rows with source
+    'ai-generated' (what connectors and agents produce, including
+    cortex_ingest) are editable here: a connector fixes its own output,
+    it does not rewrite the owner's words. Owner captures stay
+    read-only over MCP; amending one means writing a correcting note.
+    """
+    if not grants.can_write(principal):
+        return {"ok": False, "error": "write requires an approved connection"}
+    try:
+        nid = int(id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "id must be an integer note id"}
+    row = db.fetchone("SELECT id, source FROM notes WHERE id = :id",
+                      {"id": nid})
+    if not row:
+        return {"ok": False, "error": f"note {nid} not found"}
+    if (row.get("source") or "") != "ai-generated":
+        return {"ok": False, "error": (
+            f"note {nid} is one of the owner's own captures and is "
+            "read-only over MCP. Only AI-written notes (source "
+            "'ai-generated') can be edited. To amend it, write a "
+            f"correcting note with cortex_ingest that references un:{nid}.")}
+    fields: dict = {}
+    if content and content.strip():
+        fields["content"] = content
+    if tags and tags.strip():
+        fields["tags"] = tags.strip()
+    if project and project.strip():
+        fields["project"] = project.strip()
+    if not fields:
+        return {"ok": False,
+                "error": "nothing to change: pass content, tags, or project"}
+    try:
+        corpus_writes.patch_note(nid, fields)
+    except CoreWriteError:
+        return {"ok": False, "error": "core unavailable for write"}
+    return {"ok": True, "note_id": nid, "updated": sorted(fields)}
