@@ -207,6 +207,21 @@ function weekStart(day: string): string {
   return localDay(-dow, day)
 }
 
+// ISO week label matching the core's weekly period_label exactly
+// ('2026-W32'; the ISO YEAR can differ from the calendar year at the
+// boundary, so derive both from the week's Thursday).
+function isoWeekLabel(day: string): string {
+  const d = new Date(day + 'T12:00:00')
+  const thursday = new Date(d)
+  thursday.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7))
+  const isoYear = thursday.getFullYear()
+  const jan4 = new Date(isoYear, 0, 4, 12)
+  const week = 1 + Math.round(
+    ((thursday.getTime() - jan4.getTime()) / 86400000
+      - 3 + ((jan4.getDay() + 6) % 7)) / 7)
+  return `${isoYear}-W${String(week).padStart(2, '0')}`
+}
+
 function monthDates(anchorDay: string): string[] {
   const month = anchorDay.slice(0, 7)
   const first = month + '-01'
@@ -462,13 +477,17 @@ export function SimplesPage() {
           </>
         )}
         {view === 'week' && (
-          <WeekView
-            start={weekStart(anchorDay)}
-            today={today}
-            byDay={byDay}
-            heatFor={heatFor}
-            onPickDay={(d) => { setAnchorDay(d); setView('day') }}
-          />
+          <>
+            <WeekView
+              start={weekStart(anchorDay)}
+              today={today}
+              byDay={byDay}
+              heatFor={heatFor}
+              onPickDay={(d) => { setAnchorDay(d); setView('day') }}
+            />
+            <PeriodSummaryCard kind="weekly" label={isoWeekLabel(anchorDay)}
+              title="Week summary" />
+          </>
         )}
         {view === 'month' && (
           <>
@@ -486,6 +505,8 @@ export function SimplesPage() {
               today={today}
               heatFor={heatFor}
             />
+            <PeriodSummaryCard kind="monthly" label={anchorDay.slice(0, 7)}
+              title="Month summary" />
           </>
         )}
         {view === 'year' && (
@@ -1391,6 +1412,8 @@ function DayRibbon({ d }: { d: DayDetail }) {
 function DayCorpusCard({ date }: { date: string }) {
   const [detail, setDetail] = useState<DayDetail | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [busy, setBusy] = useState(false)
+  const [genError, setGenError] = useState('')
   useEffect(() => {
     let stale = false
     setState('loading')
@@ -1407,6 +1430,31 @@ function DayCorpusCard({ date }: { date: string }) {
     return () => { stale = true }
   }, [date])
 
+  // Owner ask (2026-08-09): the day's narrative belongs at the TOP of
+  // the planner's corpus card, not folded at the bottom, and it should
+  // be regenerable in place (same engine as the phone's button;
+  // temporal-daily runs a cheap model).
+  const regenerate = async () => {
+    setBusy(true)
+    setGenError('')
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/temporal/generate',
+        {
+          method: 'POST',
+          body: JSON.stringify(
+            { kind: 'daily', period_label: date, force: true }),
+        })
+      if (!r.ok) { setGenError(r.error || 'generate failed'); return }
+      const fresh = await apiFetch<DayDetail>(`/overseer/day?date=${date}`)
+      if (fresh && fresh.ok) setDetail(fresh)
+    } catch (e: any) {
+      setGenError(e?.message || String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (state === 'loading') {
     return (
       <section className="rounded-lg border border-border bg-surface-secondary p-4">
@@ -1422,9 +1470,23 @@ function DayCorpusCard({ date }: { date: string }) {
 
   return (
     <section className="rounded-lg border border-border bg-surface-secondary p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-text-primary">
-        This day in Cortex
-      </h3>
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-text-primary">
+          This day in Cortex
+        </h3>
+        <button
+          onClick={regenerate}
+          disabled={busy}
+          className="text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
+          title="Regenerate this day's summary from everything it holds"
+        >
+          {busy
+            ? 'Regenerating…'
+            : d?.narrative ? 'Regenerate summary' : 'Generate summary'}
+        </button>
+      </div>
+      {genError && <div className="text-xs text-red-400">{genError}</div>}
+      {d?.narrative && <NarrativeBlock text={d.narrative} />}
       {d && (d.sessions.length > 0 || d.time_entries.length > 0) && (
         <DayRibbon d={d} />
       )}
@@ -1505,16 +1567,121 @@ function DayCorpusCard({ date }: { date: string }) {
         </div>
       )}
 
-      {d && d.narrative && (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-text-secondary font-medium">
-            Daily narrative
-          </summary>
-          <div className="mt-1.5 text-text-secondary whitespace-pre-wrap">
-            {d.narrative}
-          </div>
-        </details>
+    </section>
+  )
+}
+
+// First paragraph shown, whole text one click away — the JournalTab
+// truncation pattern, reused for every planner summary surface.
+function NarrativeBlock({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const paragraphs = text.split(/\n\n+/).map((p) => p.trim()).filter(Boolean)
+  const hasMore = paragraphs.length > 1
+  const visible = expanded ? text : (paragraphs[0] || text)
+  return (
+    <div>
+      <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">
+        {visible}
+      </p>
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-1 text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer"
+        >
+          {expanded ? 'Show less ▴' : 'Read full ▾'}
+        </button>
       )}
+    </div>
+  )
+}
+
+// Week/Month summary inside the planner: the temporal narrative for
+// the VIEWED period, with regenerate-in-place. Same generate endpoint
+// the Journal page and the phone use; the label formats mirror the
+// core's exactly (isoWeekLabel / YYYY-MM).
+function PeriodSummaryCard({ kind, label, title }: {
+  kind: 'weekly' | 'monthly'; label: string; title: string
+}) {
+  const [narrative, setNarrative] = useState<string | null>(null)
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [busy, setBusy] = useState(false)
+  const [genError, setGenError] = useState('')
+
+  const load = async () => {
+    try {
+      const r = await apiFetch<{
+        ok: boolean
+        narratives?: { kind: string; period_label: string; narrative: string }[]
+      }>('/overseer/temporal?limit=200')
+      const row = (r.narratives || []).find(
+        (n) => n.kind === kind && n.period_label === label)
+      setNarrative(row?.narrative || null)
+      setState('ready')
+    } catch {
+      setState('error')
+    }
+  }
+  useEffect(() => {
+    setState('loading')
+    setGenError('')
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, label])
+
+  const regenerate = async () => {
+    setBusy(true)
+    setGenError('')
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/temporal/generate',
+        {
+          method: 'POST',
+          body: JSON.stringify({ kind, period_label: label, force: true }),
+        })
+      if (!r.ok) { setGenError(r.error || 'generate failed'); return }
+      await load()
+    } catch (e: any) {
+      setGenError(e?.message || String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-surface-secondary p-4 space-y-2">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-text-primary">
+          {title}
+          <span className="ml-2 text-[11px] font-mono text-text-muted">
+            {label}
+          </span>
+        </h3>
+        <button
+          onClick={regenerate}
+          disabled={busy || state === 'loading'}
+          className="text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer disabled:opacity-40"
+          title={`Regenerate ${label} from everything it holds`}
+        >
+          {busy
+            ? 'Regenerating…'
+            : narrative ? 'Regenerate' : 'Generate'}
+        </button>
+      </div>
+      {genError && <div className="text-xs text-red-400">{genError}</div>}
+      {state === 'loading' && (
+        <div className="text-xs text-text-muted animate-pulse">Reading the corpus…</div>
+      )}
+      {state === 'error' && (
+        <div className="text-xs text-text-muted">Corpus unreachable.</div>
+      )}
+      {state === 'ready' && (narrative
+        ? <NarrativeBlock text={narrative} />
+        : (
+          <div className="text-xs text-text-muted">
+            No {title.toLowerCase()} yet. Generate one, or wait for the
+            loop's scheduled pass.
+          </div>
+        ))}
     </section>
   )
 }
