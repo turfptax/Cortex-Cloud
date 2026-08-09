@@ -21,6 +21,12 @@ llm = true                      # uses LLMRouter (3 backends)
 # Fallback chain when the requested backend is unreachable:
 #   openrouter (cloud, smart) → lmstudio (network, free smart) → ondevice (Pi, free slow).
 # Per locked design (2026-05-02): three backends; never block; degrade gracefully.
+#
+# Runtime overrides (2026-08-08): the owner can re-point `model`, the
+# per-task [llm.model_overrides] and several [config] dials from the web
+# Settings page. Those overrides live in the corpus DB (overseer_state)
+# and win over this file at read time; this file stays the shipped
+# defaults. See settings.py for the allowlist.
 backend = "openrouter"
 model = "anthropic/claude-opus-4.7"
 fallback = ["lmstudio", "ondevice"]

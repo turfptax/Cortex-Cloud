@@ -12,32 +12,29 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
-## 2026-08-08: the MCP surface explains itself, and every pillar got modify/remove
+## 2026-08-08: the overseer's dials moved onto the web Settings page
 
-**Nothing to do.** New tools appear to connectors on their next tools/list;
-existing tools keep their contracts.
+**Nothing to do.** Behavior is unchanged until you touch a dial.
 
-Connecting AIs had no way to see the schema without failing at it first (the
-reference owner's voice-session logs caught an AI guessing `text` for
-cortex_ingest's `content`). Three things changed:
+The Settings page grew an Overseer card. It edits a per-instance overlay on
+`plugin.toml`: the main model, the per-task model routing, the loop cadence and
+budgets, and the git/YouTube ingest lists. Overrides are stored in your corpus
+database (`overseer_state` key `runtime_settings_overrides`), win over the
+manifest at read time, and apply on the next LLM call or tick with no restart
+and no redeploy. `plugin.toml` remains the documented default set that ships
+with the code.
 
-- **cortex_intro**, a run-this-first tool: the live tool roster with call
-  shapes (generated from the registry at call time, so it cannot drift),
-  whether the calling connection can write, the per-pillar write contract
-  (add / modify / remove), the token legend, and the common gotchas.
-  `brief=true` adds the owner-context brief.
-- **The surface is now CRUD-complete, softly**: cortex_note_update corrects
-  AI-written notes (owner captures stay read-only over MCP),
-  cortex_org_upsert creates/edits/retires organizations (is_active=0),
-  cortex_rule_update refines or retires a rule by title, cortex_task_update
-  can retitle. Every remove is a status flip, never deletion. People remains
-  owner-only.
-- **A drift guard in CI**: test_mcp_discovery fails any change that adds a
-  tool without naming it in the server instructions, and any write tool
-  missing from the write contract. The tool list can no longer silently rot.
+Two things worth knowing:
 
-cortex_ingest also tolerates `text` as an alias for `content` and answers a
-missing body with the full schema instead of a bare error.
+- The model picker autocompletes from OpenRouter's public catalog with per-1M
+  pricing, but free text is accepted, so a model that shipped an hour ago works.
+- "reset to default" per dial returns you to the manifest value; when the last
+  override is removed the storage row is deleted outright.
+
+Heads-up for a later release: the git/YouTube ingest lists in `plugin.toml` are
+still the reference instance's own. Now that they are editable per-instance,
+a future release may blank those repo defaults. Set yours in Settings and the
+change will not affect you.
 
 ## 2026-08-01: a corrupt gateway.db replica can stop your instance booting
 
