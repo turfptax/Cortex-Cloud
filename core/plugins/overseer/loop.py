@@ -414,7 +414,6 @@ class OverseerLoop:
         delay = float(self._cfg.get("loop_first_tick_delay_s", 30))
         if self._stop.wait(timeout=delay):
             return
-        interval = float(self._cfg.get("tick_interval_s", 300))
         while not self._stop.is_set():
             try:
                 self.run_one_tick(trigger="scheduled")
@@ -422,6 +421,10 @@ class OverseerLoop:
                 self._stats["ticks_failed"] += 1
                 self._stats["last_error"] = str(e)[:500]
                 self._log.exception("tick failed: %s", e)
+            # Re-read each pass: tick_interval_s is a runtime setting
+            # now, so a cadence change applies after the CURRENT wait,
+            # not after a restart.
+            interval = float(self._cfg.get("tick_interval_s", 300))
             if self._stop.wait(timeout=interval):
                 return
 

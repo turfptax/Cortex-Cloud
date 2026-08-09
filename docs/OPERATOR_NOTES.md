@@ -12,6 +12,30 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-08: the overseer's dials moved onto the web Settings page
+
+**Nothing to do.** Behavior is unchanged until you touch a dial.
+
+The Settings page grew an Overseer card. It edits a per-instance overlay on
+`plugin.toml`: the main model, the per-task model routing, the loop cadence and
+budgets, and the git/YouTube ingest lists. Overrides are stored in your corpus
+database (`overseer_state` key `runtime_settings_overrides`), win over the
+manifest at read time, and apply on the next LLM call or tick with no restart
+and no redeploy. `plugin.toml` remains the documented default set that ships
+with the code.
+
+Two things worth knowing:
+
+- The model picker autocompletes from OpenRouter's public catalog with per-1M
+  pricing, but free text is accepted, so a model that shipped an hour ago works.
+- "reset to default" per dial returns you to the manifest value; when the last
+  override is removed the storage row is deleted outright.
+
+Heads-up for a later release: the git/YouTube ingest lists in `plugin.toml` are
+still the reference instance's own. Now that they are editable per-instance,
+a future release may blank those repo defaults. Set yours in Settings and the
+change will not affect you.
+
 ## 2026-08-01: a corrupt gateway.db replica can stop your instance booting
 
 **If you run an instance, pull master.** This was a ~2 day outage caused by code

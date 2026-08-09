@@ -29,7 +29,7 @@ export function CloudSettingsCard() {
           <div className="flex justify-between">
             <dt className="text-text-muted">Config</dt>
             <dd className="text-text-secondary">
-              Managed by the gateway, no local settings
+              Overseer dials above; deploy config stays in .env
             </dd>
           </div>
         </dl>

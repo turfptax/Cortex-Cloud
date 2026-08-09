@@ -134,7 +134,8 @@ class LLMRouterError(Exception):
 class LLMRouter:
     """OpenAI-compatible chat router with three backends and a fallback chain."""
 
-    def __init__(self, *, manifest_llm: dict, db, secrets_paths=None):
+    def __init__(self, *, manifest_llm: dict, db, secrets_paths=None,
+                 settings=None):
         """
         manifest_llm: parsed [llm] table from plugin.toml. Expects keys:
             backend, model, fallback (list[str]), per-backend url/model/
@@ -142,8 +143,14 @@ class LLMRouter:
             candidate secrets.toml locations).
         db: OverseerDB instance for logging llm_calls. May be None (logging disabled).
         secrets_paths: explicit override for the candidate list (for testing).
+        settings: optional OverseerSettings. When present, the default
+            model and the per-purpose model_overrides are resolved
+            through it at CALL time, so the owner's runtime picks apply
+            without a restart. None keeps pure-manifest behavior.
         """
         self._llm = dict(manifest_llm or {})
+        self._settings = settings
+        self._catalog_cache = None  # (fetched_at_epoch, models list)
 
         # Cloud migration P0 (2026-07-20): env overrides so the cloud
         # deployment can force a cloud-only chain without editing
@@ -178,6 +185,78 @@ class LLMRouter:
                      "openrouter backend will fail",
                      len(candidates or SECRETS_DEFAULT_CANDIDATES) +
                      (1 if os.environ.get("CORTEX_SECRETS") else 0))
+
+    # ── Runtime settings resolution ─────────────────────────────
+
+    def _default_model(self, fallback):
+        """The instance's default model: runtime setting if the owner
+        picked one, else the manifest value, else `fallback`."""
+        if self._settings is not None:
+            try:
+                v = self._settings.llm_override("model")
+                if v:
+                    return v
+            except Exception as e:
+                log.warning("settings read failed for model: %s", e)
+        return self._llm.get("model", fallback)
+
+    def _model_overrides(self):
+        """Per-purpose model map with runtime picks layered on."""
+        if self._settings is not None:
+            try:
+                return self._settings.effective_model_overrides()
+            except Exception as e:
+                log.warning("settings read failed for model_overrides: %s", e)
+        return self._llm.get("model_overrides") or {}
+
+    def models_catalog(self, *, max_age_s=3600):
+        """OpenRouter /models trimmed for the settings picker, cached
+        for `max_age_s`. Returns {models, fetched_at, stale}; `stale`
+        is True when the fetch failed and an old cache was served."""
+        now = time.time()
+        if self._catalog_cache is not None:
+            fetched_at, models = self._catalog_cache
+            if now - fetched_at < max_age_s:
+                return {"models": models, "fetched_at": int(fetched_at),
+                        "stale": False}
+        base_url = self._llm.get("openrouter_url",
+                                 "https://openrouter.ai/api/v1")
+        try:
+            req = urllib.request.Request(
+                base_url.rstrip("/") + "/models",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            models = []
+            for m in payload.get("data") or []:
+                mid = m.get("id")
+                if not mid:
+                    continue
+                pricing = m.get("pricing") or {}
+                try:
+                    prompt = float(pricing.get("prompt") or 0)
+                    completion = float(pricing.get("completion") or 0)
+                except (TypeError, ValueError):
+                    prompt = completion = 0.0
+                models.append({
+                    "id": mid,
+                    "name": m.get("name") or mid,
+                    "context_length": m.get("context_length") or 0,
+                    # Per-token USD is unreadable; the UI wants per-1M.
+                    "prompt_usd_per_m": round(prompt * 1_000_000, 4),
+                    "completion_usd_per_m": round(completion * 1_000_000, 4),
+                })
+            models.sort(key=lambda m: m["id"])
+            self._catalog_cache = (now, models)
+            return {"models": models, "fetched_at": int(now), "stale": False}
+        except Exception as e:
+            log.warning("openrouter catalog fetch failed: %s", e)
+            if self._catalog_cache is not None:
+                fetched_at, models = self._catalog_cache
+                return {"models": models, "fetched_at": int(fetched_at),
+                        "stale": True}
+            raise
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -230,7 +309,7 @@ class LLMRouter:
         # Cheap models for small structured tasks, smart models for the
         # high-stakes interpretive work.
         if model is None and purpose:
-            overrides = self._llm.get("model_overrides") or {}
+            overrides = self._model_overrides()
             if purpose in overrides:
                 model = overrides[purpose]
 
@@ -342,7 +421,7 @@ class LLMRouter:
 
         # Per-task model override (same logic as complete()).
         if model is None and purpose:
-            overrides = self._llm.get("model_overrides") or {}
+            overrides = self._model_overrides()
             if purpose in overrides:
                 model = overrides[purpose]
 
@@ -422,8 +501,8 @@ class LLMRouter:
         if backend == "openrouter":
             base_url = self._llm.get(
                 "openrouter_url", "https://openrouter.ai/api/v1")
-            requested = model or self._llm.get(
-                "model", "anthropic/claude-opus-4.7")
+            requested = model or self._default_model(
+                "anthropic/claude-opus-4.7")
             if not self._openrouter_key:
                 raise RuntimeError("OpenRouter API key not configured")
             msg, usage, _resolved, finish = self._call_oai_messages(
@@ -580,7 +659,7 @@ class LLMRouter:
         if not self._openrouter_key:
             raise RuntimeError("OpenRouter API key not configured")
         base_url = self._llm.get("openrouter_url", "https://openrouter.ai/api/v1")
-        requested = model or self._llm.get("model", "anthropic/claude-opus-4.7")
+        requested = model or self._default_model("anthropic/claude-opus-4.7")
         text, usage, _resolved = self._call_oai(
             base_url=base_url,
             model=requested,
