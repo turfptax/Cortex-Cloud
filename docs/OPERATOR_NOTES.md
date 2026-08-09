@@ -12,6 +12,51 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-09: deploys verify themselves, and the replica chain cannot orphan
+
+**Pull master.** Two closures from the 2026-08-09 litestream incident (the
+near-miss where cortex.db's blob replica was unrestorable and nobody knew):
+
+- **The deploy gate now waits for runningState.** ACA declares 100% traffic
+  on a new revision while it is still Activating and keeps routing to the
+  old draining replica, so every smoke assertion was interrogating the OLD
+  app; two wedged deploys went green in CI. The smoke step now requires the
+  new revision to reach Running before any URL assertion counts, waits up
+  to ten minutes (a cold litestream restore of a grown corpus is minutes),
+  logs each poll, and on failure points at the restore container.
+- **litestream gets explicit `snapshot-interval: 6h` + `retention: 72h`**
+  on both databases. On defaults, retention enforcement produced a single
+  generation whose only snapshot was missing its own leading WAL bytes:
+  zero restorable points. With 6h snapshots there is always a newer
+  complete restore point standing before pruning deletes anything, and
+  roughly a dozen restore points ride in the 72h window.
+
+If your instance predates this: your current generation was freshly cut on
+2026-08-09 and is healthy; the new settings simply keep it that way.
+
+## 2026-08-09: check-ins fire on data, not on a timer; stale reminders age out
+
+**Nothing to do.** Three loop-honesty changes, all deterministic and LLM-free
+(this entry rides with the deploy-hardening PR; the merge-conflict resolution
+on the original PR #68 dropped it from the log while the code landed fine):
+
+- **Trigger-gated check-in.** The overseer writes a status note (note_type
+  `checkin`, source `overseer`) only when owner-side data actually arrived
+  since the last one: new notes (a phone sync, a voice capture, an AI note)
+  or new journal entries. A minimum-hours floor (`loop_checkin_min_hours`,
+  default 4) spaces them out; held data still gets reported when the floor
+  lifts. The first tick anchors the high-water mark and writes nothing.
+- **Reminder aging.** Reminder-type notes have no closed state, so old ones
+  surfaced as "open" in working memory forever. New
+  `working_memory_reminder_max_age_days` (default 45) ages them out of the
+  open view; the rows themselves are untouched.
+- **The gist origin counter stops crying wolf.** Notes-digest and rollup
+  gists never write tags-table rows, so the freshness block's origin
+  distribution counted fully-labeled windows as all-untagged. The counter
+  now falls back to the gist row itself (period_label, project_tag).
+
+All three dials are editable on the web Settings page's Overseer card.
+
 ## 2026-08-09: settings polish - model combobox and paste-a-link channels
 
 **Nothing to do.**
