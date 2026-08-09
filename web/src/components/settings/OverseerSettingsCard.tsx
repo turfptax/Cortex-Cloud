@@ -108,9 +108,14 @@ function fmtPrice(m: CatalogModel): string {
   return `$${m.prompt_usd_per_m}/M in, $${m.completion_usd_per_m}/M out`
 }
 
-/** Text input with a filtered dropdown over the OpenRouter catalog.
- * Free text is always allowed: the catalog is a convenience, not a
- * gate, so a brand-new model id works the day it ships. */
+/** Combobox over the full OpenRouter catalog. Clicking in shows the
+ * WHOLE list (scrollable); the filter applies only to text typed since
+ * focus, so a field already holding a model id does not strangle the
+ * list down to its own near-matches. Free text is always allowed: the
+ * catalog is a convenience, not a gate, so a brand-new model id works
+ * the day it ships. */
+const PICKER_MAX_ROWS = 150
+
 function ModelPicker({
   value,
   onChange,
@@ -123,58 +128,193 @@ function ModelPicker({
   placeholder?: string
 }) {
   const [open, setOpen] = useState(false)
+  // null = not typing: the input shows `value` and the list is unfiltered.
+  const [query, setQuery] = useState<string | null>(null)
+
+  const filter = (query ?? '').trim().toLowerCase()
   const matches = useMemo(() => {
-    const q = value.trim().toLowerCase()
-    if (!q) return models.slice(0, 12)
-    return models
-      .filter(
-        (m) =>
-          m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
-      )
-      .slice(0, 12)
-  }, [value, models])
+    if (!filter) return models
+    return models.filter(
+      (m) =>
+        m.id.toLowerCase().includes(filter) ||
+        m.name.toLowerCase().includes(filter)
+    )
+  }, [filter, models])
+  const shown = matches.slice(0, PICKER_MAX_ROWS)
+  const selected = useMemo(
+    () => models.find((m) => m.id === value.trim()),
+    [models, value]
+  )
 
   return (
     <div className="relative">
       <input
-        value={value}
+        value={query ?? value}
         onChange={(ev) => {
+          setQuery(ev.target.value)
           onChange(ev.target.value)
           setOpen(true)
         }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onFocus={(ev) => {
+          setQuery(null)
+          setOpen(true)
+          // Select-all so typing REPLACES the current id (combobox
+          // search), instead of appending to it and matching nothing.
+          ev.target.select()
+        }}
+        onBlur={() => {
+          setOpen(false)
+          setQuery(null)
+        }}
         placeholder={placeholder ?? 'provider/model-id'}
         className={INPUT_CLS + ' font-mono'}
         spellCheck={false}
       />
-      {open && matches.length > 0 && (
-        <ul className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto bg-surface-tertiary border border-border rounded-lg shadow-lg">
-          {matches.map((m) => (
-            <li key={m.id}>
-              <button
-                type="button"
-                // onMouseDown so the pick lands before the input's blur
-                // closes the list.
-                onMouseDown={(ev) => {
-                  ev.preventDefault()
-                  onChange(m.id)
-                  setOpen(false)
-                }}
-                className="w-full text-left px-3 py-2 hover:bg-surface-secondary transition-colors"
-              >
-                <span className="block text-sm text-text-primary font-mono">
-                  {m.id}
-                </span>
-                <span className="block text-[11px] text-text-muted">
-                  {m.name}
-                  {m.context_length ? ` · ${fmtContext(m.context_length)}` : ''}
-                  {` · ${fmtPrice(m)}`}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
+      {open && models.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full bg-surface-tertiary border border-border rounded-lg shadow-lg">
+          <ul className="max-h-64 overflow-y-auto">
+            {shown.map((m) => (
+              <li key={m.id}>
+                <button
+                  type="button"
+                  // onMouseDown so the pick lands before the input's blur
+                  // closes the list.
+                  onMouseDown={(ev) => {
+                    ev.preventDefault()
+                    onChange(m.id)
+                    setQuery(null)
+                    setOpen(false)
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-surface-secondary transition-colors"
+                >
+                  <span className="block text-sm text-text-primary font-mono">
+                    {m.id}
+                  </span>
+                  <span className="block text-[11px] text-text-muted">
+                    {m.name}
+                    {m.context_length
+                      ? ` · ${fmtContext(m.context_length)}`
+                      : ''}
+                    {` · ${fmtPrice(m)}`}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="px-3 py-1.5 border-t border-border text-[11px] text-text-muted">
+            {matches.length === 0
+              ? 'no catalog match · free text is fine, new models work the day they ship'
+              : matches.length === models.length
+                ? `${models.length} models on OpenRouter · type to filter`
+                : `${matches.length} of ${models.length} models match`}
+            {matches.length > PICKER_MAX_ROWS
+              ? ` · showing first ${PICKER_MAX_ROWS}`
+              : ''}
+          </div>
+        </div>
+      )}
+      {selected && query === null && (
+        <p className="text-[11px] text-text-muted mt-1">
+          {selected.name}
+          {selected.context_length
+            ? ` · ${fmtContext(selected.context_length)}`
+            : ''}
+          {` · ${fmtPrice(selected)}`}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Paste-a-link row for the YouTube channels list: the server resolves
+ * any channel/handle/video URL to a verified `persona:channel_id` entry
+ * (RSS-checked, so the id is one the ingester will actually poll). */
+function YouTubeAddRow({
+  existing,
+  onAdd,
+}: {
+  existing: string
+  onAdd: (entry: string) => void
+}) {
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null)
+
+  const resolve = async () => {
+    const target = url.trim()
+    if (!target || busy) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const resp = await apiFetch<{
+        ok: boolean
+        entry?: string
+        title?: string
+        channel_id?: string
+        error?: string
+      }>('/overseer/settings/resolve-youtube', {
+        method: 'POST',
+        body: JSON.stringify({ url: target }),
+      })
+      if (!resp.ok || !resp.entry || !resp.channel_id) {
+        setMsg({ kind: 'err', text: resp.error || 'could not resolve that link' })
+        return
+      }
+      if (existing.includes(resp.channel_id)) {
+        setMsg({
+          kind: 'warn',
+          text: `${resp.title || resp.channel_id} is already in the list.`,
+        })
+        return
+      }
+      onAdd(resp.entry)
+      setUrl('')
+      setMsg({
+        kind: 'ok',
+        text: `Added ${resp.title || 'channel'} as ${resp.entry}. Append :project-tag on the line if you want routing, then Save.`,
+      })
+    } catch (err) {
+      setMsg({
+        kind: 'err',
+        text: err instanceof ApiError ? err.userMessage : String((err as Error).message),
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-2">
+      <div className="flex gap-2">
+        <input
+          value={url}
+          onChange={(ev) => setUrl(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Enter') {
+              ev.preventDefault()
+              void resolve()
+            }
+          }}
+          placeholder="Paste a channel, @handle, or video link"
+          className={INPUT_CLS}
+          spellCheck={false}
+        />
+        <Button size="sm" variant="secondary" onClick={() => void resolve()} disabled={busy || !url.trim()}>
+          {busy ? 'Resolving…' : 'Add'}
+        </Button>
+      </div>
+      {msg && (
+        <p
+          className={`text-[11px] mt-1 ${
+            msg.kind === 'ok'
+              ? 'text-success'
+              : msg.kind === 'warn'
+                ? 'text-warning'
+                : 'text-danger'
+          }`}
+        >
+          {msg.text}
+        </p>
       )}
     </div>
   )
@@ -500,6 +640,15 @@ export function OverseerSettingsCard() {
               isDefault={e.override == null}
               onReset={() => resetKey(e)}
             />
+            {e.key === 'loop_youtube_channels' && (
+              <YouTubeAddRow
+                existing={String(draft[e.key] ?? '')}
+                onAdd={(entry) => {
+                  const cur = String(draft[e.key] ?? '').replace(/\s+$/, '')
+                  setKey(e.key, cur ? `${cur}\n${entry}` : entry)
+                }}
+              />
+            )}
             <textarea
               value={String(draft[e.key] ?? '')}
               onChange={(ev) => setKey(e.key, ev.target.value)}

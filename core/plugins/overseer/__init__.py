@@ -398,6 +398,8 @@ class OverseerPlugin(Plugin):
             Route("GET",  "/settings",              self._http_settings_get),
             Route("POST", "/settings",              self._http_settings_set),
             Route("GET",  "/settings/models",       self._http_settings_models),
+            Route("POST", "/settings/resolve-youtube",
+                  self._http_settings_resolve_youtube),
             Route("POST", "/summarize-recent",      self._http_summarize_recent),
             Route("GET",  "/themes",                self._http_themes),
             Route("GET",  "/episodes",              self._http_episodes),
@@ -989,6 +991,24 @@ class OverseerPlugin(Plugin):
             return {"ok": True, **self.llm.models_catalog()}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def _http_settings_resolve_youtube(self, payload):
+        """POST /plugins/overseer/settings/resolve-youtube
+
+        Body: {"url": "<channel URL, @handle, video URL, or UC... id>"}
+        Resolves to a verified `persona:channel_id` entry for the
+        loop_youtube_channels setting. Verification = the channel's RSS
+        feed (the exact endpoint the ingester polls) answered for the id.
+        """
+        from youtube_resolve import resolve
+        url = ((payload or {}).get("url") or "").strip()
+        if not url:
+            return {"ok": False, "error": "missing 'url'"}
+        try:
+            return resolve(url)
+        except Exception as e:
+            self.api.log.exception("resolve-youtube failed")
+            return {"ok": False, "error": str(e)[:300]}
 
     def _http_summarize_recent(self, payload):
         """POST /plugins/overseer/summarize-recent - end-to-end smoke test.

@@ -12,6 +12,25 @@ Companion docs: [OAUTH_2_1.md](OAUTH_2_1.md) for the token model,
 runbook, [CONNECTOR_GRANTS_DESIGN.md](CONNECTOR_GRANTS_DESIGN.md) for the approval
 model.
 
+## 2026-08-09: settings polish - model combobox and paste-a-link channels
+
+**Nothing to do.**
+
+Two owner-feedback fixes on the day-old Overseer settings card:
+
+- The model picker is a real combobox now: clicking a field shows the whole
+  OpenRouter catalog (scrollable, with a count footer), typing replaces the
+  current id and filters live, and a no-match state says plainly that free
+  text is fine. Before this, the list was filtered by the field's existing
+  value, so a populated field appeared to only know three models.
+- The YouTube channels list accepts a pasted link: channel URL, @handle,
+  video URL, or bare UC id. A new core endpoint
+  (`POST /plugins/overseer/settings/resolve-youtube`) resolves it using the
+  channel page's `externalId` (the first `"channelId"` in YouTube HTML often
+  belongs to a FEATURED channel, a 2026-06 lesson), verifies the id against
+  the same RSS feed the ingester polls, and appends a ready
+  `persona:channel_id` line. Duplicates are detected by channel id.
+
 ## 2026-08-08: the MCP surface explains itself, and every pillar got modify/remove
 
 **Nothing to do.** New tools appear to connectors on their next tools/list;
