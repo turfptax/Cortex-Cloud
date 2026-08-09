@@ -106,6 +106,12 @@ secrets_paths = [
 # durable artifacts Tory will re-read in years and deserve the
 # bigger model.
 "temporal-weekly"   = "anthropic/claude-sonnet-4.6"
+# 2026-08-09: dailies pinned to Flash. They were riding the unpinned
+# default (whatever the main model is), and the phone's new
+# reprocess-day button regenerates them on demand, so cost matters.
+# Dailies are the least durable temporal tier (the weekly re-reads
+# them); owner can re-point this from the Settings card any time.
+"temporal-daily"    = "google/gemini-2.5-flash"
 # Slice 3f.5 #2: question-centered routing. Each new gist gets routed
 # (or "unfiled") against active open_questions.
 # Slice 14.5 (2026-05-22): moved Sonnet → Gemini 2.0 Flash. ~30x

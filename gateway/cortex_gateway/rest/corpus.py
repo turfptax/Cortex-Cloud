@@ -6,12 +6,15 @@ cortex_recent tools. journal + ingest are app write paths. Portable `db` access.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from pydantic import BaseModel
 
 from .. import corpus_service, corpus_writes, db
 from ..auth import Principal, require_scope
+from ..core_client import CoreWriteError, core
 
 router = APIRouter(prefix="/v1", tags=["corpus"])
 
@@ -52,6 +55,33 @@ def narratives(period: str = Query(default="weekly"),
         "created_at FROM temporal_narratives WHERE kind = :k "
         "ORDER BY period_start DESC", {"k": kind})
     return {"period": kind, "narratives": rows[:limit]}
+
+
+class DayReprocessIn(BaseModel):
+    day: str
+
+
+@router.post("/day/reprocess")
+def day_reprocess(body: DayReprocessIn, _: Principal = Depends(_app)):
+    """Regenerate the daily narrative for one day, on demand (the
+    phone's "reprocess this day" button). Forces a fresh row even when
+    one exists, and the generation reads everything the day holds
+    server-side (sessions, the notes digest, sleep parsing). Model
+    choice rides the overseer's temporal-daily purpose, pinned cheap in
+    plugin.toml and owner-tunable from the web Settings card. The long
+    read timeout is the LLM call; a down core still fails in seconds
+    on connect."""
+    day = (body.day or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    try:
+        out = core().post(
+            "/plugins/overseer/temporal/generate",
+            {"kind": "daily", "period_label": day, "force": True},
+            read=120.0)
+    except CoreWriteError as e:
+        raise HTTPException(502, f"could not regenerate the day: {e}")
+    return out
 
 
 # ── Human journal ─────────────────────────────────────────────────────
